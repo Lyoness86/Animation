@@ -55,7 +55,7 @@ class Character:
             if a.kind == "idle":
                 d = max(a.duration, 0.1)
                 segs.append(Segment(t, t + d, "idle", p, p, left))
-            elif a.kind == "walk":
+            elif a.kind == "walk" and a.target is not None:
                 dx = (a.target[0] - p[0]) * REF_W
                 dy = (a.target[1] - p[1]) * REF_H
                 speed = WALK_SPEED * self.height * REF_H
@@ -65,7 +65,7 @@ class Character:
                 segs.append(Segment(t, t + d, "walk", p, tuple(a.target), left))
                 p = tuple(a.target)
             else:
-                if a.kind not in lib.clips:
+                if a.kind not in lib.clips or a.kind == "walk":
                     continue
                 d = lib[a.kind].duration
                 segs.append(Segment(t, t + d, a.kind, p, p, left))
@@ -85,10 +85,10 @@ class Character:
             i += 1
         s = segs[i]
         local = max(t - s.t0, 0.0)
-        pose = lib[s.clip].sample(local)
+        pose = self.rig.resolve_pose(lib[s.clip].sample(local))
         if local < BLEND_TIME and i > 0:
             prev = segs[i - 1]
-            prev_pose = lib[prev.clip].sample(prev.t1 - prev.t0)
+            prev_pose = self.rig.resolve_pose(lib[prev.clip].sample(prev.t1 - prev.t0))
             u = local / BLEND_TIME
             pose = blend(prev_pose, pose, u * u * (3 - 2 * u))
         if s.p0 != s.p1 and math.isfinite(s.t1):

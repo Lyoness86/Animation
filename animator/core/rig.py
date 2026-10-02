@@ -22,6 +22,17 @@ BONES = [
 BONE_NAMES = [b[0] for b in BONES]
 DRAW_ORDER = ["thigh_l", "thigh_r", "shin_l", "shin_r", "torso", "head",
               "upper_arm_l", "upper_arm_r", "forearm_l", "forearm_r"]
+# Smooth bending: near each joint the picture blends between the two bones
+# (parent, child, joint, blend radius as a fraction of shoulder width).
+JOINT_BLENDS = [
+    ("torso", "head", "neck", 0.22),
+    ("torso", "upper_arm_l", "shoulder_l", 0.18), ("upper_arm_l", "forearm_l", "elbow_l", 0.16),
+    ("torso", "upper_arm_r", "shoulder_r", 0.18), ("upper_arm_r", "forearm_r", "elbow_r", 0.16),
+    ("torso", "thigh_l", "hip_l", 0.22), ("thigh_l", "shin_l", "knee_l", 0.17),
+    ("torso", "thigh_r", "hip_r", 0.22), ("thigh_r", "shin_r", "knee_r", 0.17),
+]
+BONE_PARENT = {b[0]: b[1] for b in BONES}
+
 PART_COLOURS = {  # for the "check the dots" overlay (BGR)
     "torso": (60, 180, 75), "head": (25, 225, 255), "upper_arm_l": (200, 130, 0),
     "forearm_l": (240, 50, 230), "upper_arm_r": (48, 130, 245), "forearm_r": (180, 30, 145),
@@ -119,14 +130,33 @@ class Rig:
         ty, tx = np.nonzero(labels == idx["torso"])
         hull = np.zeros((h, w), np.uint8)
         if len(tx):
-            cv2.fillConvexPoly(hull, cv2.convexHull(np.stack([tx, ty], 1).astype(np.int32)), 1)
+            # include the shoulder and hip joints so the shoulders exist
+            # behind the sleeves when an arm is raised
+            up = np.array([0.0, -0.12 * sw])
+            out_l = (J["shoulder_l"] - J["neck"]) * 0.15
+            out_r = (J["shoulder_r"] - J["neck"]) * 0.15
+            extra = np.array([J["shoulder_l"] + up + out_l, J["shoulder_r"] + up + out_r,
+                              J["shoulder_l"], J["shoulder_r"], J["hip_l"], J["hip_r"], J["neck"]])
+            pts = np.concatenate([np.stack([tx, ty], 1), extra]).astype(np.int32)
+            cv2.fillConvexPoly(hull, cv2.convexHull(pts), 1)
         hull = hull.astype(bool) & solid
         arms = np.isin(labels, [idx[n] for n in ("upper_arm_l", "forearm_l", "upper_arm_r", "forearm_r")])
         behind = hull & arms
         torso_img = self.image.copy()
         if behind.any():
-            torso_img[..., :3] = cv2.inpaint(self.image[..., :3], behind.astype(np.uint8) * 255,
-                                             7, cv2.INPAINT_TELEA)
+            # fill from shirt pixels only (never from the arm's own skin)
+            # (transparent pixels still hold the old background colour, so
+            # they are excluded as sources too)
+            fill_mask = cv2.dilate((arms & solid).astype(np.uint8) * 255, np.ones((5, 5), np.uint8))
+            fill_mask[alpha < 128] = 255
+            by, bx = np.nonzero(hull)
+            m = int(0.1 * sw)
+            y0, y1 = max(by.min() - m, 0), min(by.max() + m + 1, h)
+            x0, x1 = max(bx.min() - m, 0), min(bx.max() + m + 1, w)
+            filled = cv2.inpaint(np.ascontiguousarray(self.image[y0:y1, x0:x1, :3]),
+                                 np.ascontiguousarray(fill_mask[y0:y1, x0:x1]), 7, cv2.INPAINT_TELEA)
+            torso_img[y0:y1, x0:x1, :3] = np.where(behind[y0:y1, x0:x1, None], filled,
+                                                   torso_img[y0:y1, x0:x1, :3])
             torso_img[behind, 3] = 255
 
         # Part masks, with the parent duplicating child pixels near each joint
@@ -156,14 +186,89 @@ class Rig:
             crop = src[y0:y1, x0:x1].copy()
             crop[..., 3] = np.where(m[y0:y1, x0:x1], crop[..., 3], 0)
             crop = cv2.copyMakeBorder(_premultiply(crop), 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
-            levels = [(crop, float(x0 - 1), float(y0 - 1), 1.0)]
+            ox, oy = float(x0 - 1), float(y0 - 1)
+            bones, weights = self._skin_weights(name, crop.shape[:2], ox, oy, sw)
+            levels = [(crop, 1.0)]
             f = 1.0
             while min(crop.shape[:2]) > 8 and f < 8:
                 crop = cv2.resize(crop, (max(1, crop.shape[1] // 2), max(1, crop.shape[0] // 2)),
                                   interpolation=cv2.INTER_AREA)
                 f *= 2
-                levels.append((crop, float(x0 - 1), float(y0 - 1), f))
-            self.parts[name] = levels
+                levels.append((crop, f))
+            self.parts[name] = {"levels": levels, "ox": ox, "oy": oy,
+                                "bones": bones, "weights": weights}
+
+        # rest direction of every bone (0 = pointing down, counter-clockwise +)
+        self.rest_angle = {}
+        for name, parent, j0, j1, _ in BONES:
+            d = J[j1] - J[j0]
+            self.rest_angle[name] = math.degrees(math.atan2(d[0], d[1]))
+
+    def _skin_weights(self, part, shape, ox, oy, sw):
+        """Per-pixel bone weights for one part (own bone first). Near a joint
+        the weight moves smoothly towards the neighbouring bone, so the
+        picture bends there instead of tearing."""
+        h, w = shape
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        xx += ox
+        yy += oy
+        bones = [part]
+        W = [np.ones((h, w), np.float32)]
+        for P, C, jn, rf in JOINT_BLENDS:
+            if part not in (P, C):
+                continue
+            if part == "torso" and P == "torso":
+                continue  # torso stays solid; limbs are drawn over the joint
+            other = C if part == P else P
+            j = self.J[jn]
+            r = rf * sw
+            R = 2.2 * r
+            child_dir = self.J[[b for b in BONES if b[0] == C][0][3]] - j
+            n = np.linalg.norm(child_dir)
+            child_dir = child_dir / n if n > 1e-6 else np.array([0.0, 1.0])
+            s_ = (xx - j[0]) * child_dir[0] + (yy - j[1]) * child_dir[1]
+            if P == "torso":
+                # big joints: the torso stays solid, only the limb/head bends
+                t = np.clip(s_ / (2 * r), 0, 1)
+            else:
+                t = np.clip((s_ + r) / (2 * r), 0, 1)
+            t = t * t * (3 - 2 * t)
+            d = np.hypot(xx - j[0], yy - j[1])
+            g = np.clip((R - d) / (0.5 * R), 0, 1)
+            g = g * g * (3 - 2 * g)
+            amt = (t if part == P else 1 - t) * g
+            if amt.max() < 1e-3:
+                continue
+            bones.append(other)
+            W.append(amt.astype(np.float32))
+            W[0] = W[0] - amt
+        W = np.stack(W, axis=2)
+        W[..., 0] = np.maximum(W[..., 0], 0)
+        W /= np.maximum(W.sum(axis=2, keepdims=True), 1e-6)
+        return bones, np.ascontiguousarray(W, dtype=np.float32)
+
+    def resolve_pose(self, pose):
+        """Turn 'point this bone in direction X' channels (bone.dir with
+        weight bone.dirw) into ordinary rotations. Directions are screen
+        angles (0 = down, 90 = right, 180 = up), so e.g. a wave looks the same
+        whatever pose the arm was drawn in."""
+        if not any(k.endswith(".dirw") for k in pose):
+            return pose
+        out = dict(pose)
+        accum = {}
+        for name, parent, *_ in BONES:
+            base = accum[parent] if parent else out.get("root.rot", 0.0)
+            rot = out.get(name + ".rot", 0.0)
+            w = out.get(name + ".dirw", 0.0)
+            if w > 0 and name + ".dir" in out:
+                target = out[name + ".dir"] - self.rest_angle[name] - base
+                delta = (target - rot + 180) % 360 - 180
+                rot = rot + w * delta
+                out[name + ".rot"] = rot
+            accum[name] = base + rot
+        for k in [k for k in out if k.endswith(".dir") or k.endswith(".dirw")]:
+            del out[k]
+        return out
 
     def _segment(self, J, solid, sw, head_len):
         """Label each pixel with its body part. Distances are measured
@@ -199,7 +304,53 @@ class Rig:
                                      interpolation=cv2.INTER_LINEAR))
         lab = np.argmin(np.stack(scores), axis=0).astype(np.uint8)
         lab = self._torso_core_fix(lab, J, solid, sw)
+        hair = self._find_hair(J, solid, head_len)
+        if hair is not None:
+            lab[hair] = BONE_NAMES.index("head")
         return np.where(solid, lab, 255).astype(np.uint8)
+
+    def _find_hair(self, J, solid, head_len):
+        """Hair = pixels coloured like the top of the head and connected to
+        it (above the hips). Long hair then stays with the head instead of
+        being carried around by an arm."""
+        h, w = solid.shape
+        lab = cv2.cvtColor(self.image[..., :3], cv2.COLOR_BGR2Lab).astype(np.float32)
+        top = J["head_top"]
+        y0, y1 = int(max(top[1], 0)), int(min(top[1] + 0.18 * head_len, h))
+        x0, x1 = int(max(top[0] - 0.3 * head_len, 0)), int(min(top[0] + 0.3 * head_len, w))
+        seed = np.zeros_like(solid)
+        seed[y0:y1, x0:x1] = True
+        seed &= self.image[..., 3] > 200
+        if seed.sum() < 20:
+            return None
+        colour = np.median(lab[seed], axis=0)
+        wgt = np.array([0.25, 1.0, 1.0], np.float32)  # shading varies, hue doesn't
+        dist = np.sqrt((((lab - colour) * wgt) ** 2).sum(axis=2))
+
+        # adaptive threshold: stay well clear of the shirt and face colours
+        def sample(c, r):
+            x0, x1 = int(max(c[0] - r, 0)), int(min(c[0] + r + 1, w))
+            y0, y1 = int(max(c[1] - r, 0)), int(min(c[1] + r + 1, h))
+            m = self.image[y0:y1, x0:x1, 3] > 200
+            return np.median(lab[y0:y1, x0:x1][m], axis=0) if m.any() else None
+        chest = 0.6 * (J["shoulder_l"] + J["shoulder_r"]) / 2 + 0.4 * J["pelvis"]
+        face = 0.55 * J["neck"] + 0.45 * J["head_top"]
+        others = [c for c in (sample(chest, 0.08 * head_len), sample(face, 0.08 * head_len)) if c is not None]
+        gap = min([np.sqrt((((c - colour) * wgt) ** 2).sum()) for c in others] + [90.0])
+        similar = (dist < min(45.0, 0.5 * gap)) & solid
+        hip_y = int((J["hip_l"][1] + J["hip_r"][1]) / 2)
+        similar[hip_y:] = False
+        similar = cv2.morphologyEx(similar.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        n, cc = cv2.connectedComponents(similar, connectivity=8)
+        ids = np.unique(cc[seed & (similar > 0)])
+        ids = ids[ids > 0]
+        if not len(ids):
+            return None
+        hair = np.isin(cc, ids)
+        hair = cv2.morphologyEx(hair.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8)).astype(bool) & solid
+        if hair.sum() > 0.4 * solid.sum():  # hair colour matches the clothes - don't trust it
+            return None
+        return hair
 
     def _torso_core_fix(self, lab, J, solid, sw):
         """Rows between shoulders and hips: the unbroken run of pixels around

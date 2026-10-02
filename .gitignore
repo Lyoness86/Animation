@@ -5,3 +5,4 @@ models/*.task
 exports/
 .pytest_cache/
 test_output/
+demo_scene.mp4
