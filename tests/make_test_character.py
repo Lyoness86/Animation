@@ -23,9 +23,9 @@ def _limb(img, p0, p1, width, colour):
     _shaded_ellipse(img, tuple(c), (int(L / 2 + width * 0.4), int(width / 2)), colour, ang)
 
 
-def make_character(h=1000, w=700, shirt=(40, 60, 200), seed=0):
+def make_character(h=1000, w=700, shirt=(40, 60, 200), seed=0, bg=(230, 60, 20)):
     img = np.zeros((h, w, 3), np.uint8)
-    img[:] = (230, 60, 20)  # BGR blue screen (slightly uneven)
+    img[:] = bg  # BGR; default blue screen (slightly uneven)
     rng = np.random.default_rng(seed)
     img = np.clip(img.astype(int) + rng.integers(-8, 8, img.shape), 0, 255).astype(np.uint8)
     cx = w // 2

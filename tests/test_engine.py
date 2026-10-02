@@ -51,3 +51,12 @@ def test_transparent_render_has_alpha():
     a = frame[..., 3]
     assert a.min() == 0 and a.max() > 0.99
     assert np.isfinite(frame).all()
+
+
+def test_keying_works_on_yellow_and_green_backgrounds():
+    for bg in [(60, 245, 235), (40, 200, 40)]:  # BGR yellow, green
+        cut = prepare_cutout(make_character(bg=bg))
+        assert cut[0, 0, 3] == 0
+        assert cut[cut.shape[0] // 2, cut.shape[1] // 2, 3] == 255
+        # no background colour left on solid pixels near the edge
+        assert (cut[..., 3] > 0).mean() < 0.75
