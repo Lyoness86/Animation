@@ -25,10 +25,18 @@ folder (`.venv`, `models`, `output`). To uninstall, delete the folder.
 |---|---|
 | 16 GB+ VRAM (RTX 4070 Ti Super / 4080 / 4090 / 5070 Ti / 5080 / 5090, 3090) | Excellent, ~5–20 s per picture |
 | 12 GB (RTX 3060 12 GB, 4070, 4070 Super, 5070) | Good, ~15–45 s per picture |
-| 8 GB (RTX 3060 Ti, 3070, 4060, 4060 Ti 8 GB) | Works but slow, ~1–4 min per picture |
+| 8 GB (RTX 3060 Ti, 3070, 4060, 4060 Ti 8 GB) | Works but slow, ~1–2 min per picture |
+| 8 GB older card (GTX 1070 / 1080, RTX 2070 / 2080) | Works, slowly: estimated 2–5 min per picture |
 | under 8 GB, AMD / Intel graphics, or no graphics card | Not practical |
 
 RAM: 16 GB minimum, **32 GB recommended**.
+
+On smaller PCs (under 12 GB graphics memory, under 24 GB RAM, or a card older
+than the RTX 30 series) it switches to a **low-memory mode** by itself. It reads all the
+descriptions first, unloads that part of the model, and then sends the drawing
+part through the graphics card a piece at a time. Older cards
+calculate in full precision because they can't use the faster number format.
+The first picture of each run also includes about 1–2 minutes of loading.
 
 ## Try it
 
@@ -37,7 +45,7 @@ RAM: 16 GB minimum, **32 GB recommended**.
    downloads ~20 GB).
 3. Either:
    - **drag one of your existing character pictures** (e.g. `Leah no drink.png`)
-     onto **`run_poc.bat`**, or
+     onto **`run_poc.bat`** (or onto **`run_poc_small.bat`** for a quicker test with smaller pictures), or
    - double-click **`run_poc.bat`** and type a description.
 4. When it finishes, it opens a folder in `output\`. Look at
    **`comparison_sheet.png`**: the first picture is the character, and the others
@@ -53,10 +61,11 @@ Advanced (from a command prompt in this folder):
 
 ## For developers
 
-- `studio/engine.py`: loads the model, chooses a memory mode from the VRAM,
+- `studio/engine.py`: loads the model, chooses a memory mode (gpu / offload / staged) from VRAM, RAM and card age,
   `create()` (text to picture), `edit()` (references + text to picture) and the background cut-out.
 - `studio/prompts.py`: style, framing and pose wording.
 - `poc.py`: the proof-of-concept flow.
-- `check_pc.py`: hardware check (standard library only).
+- `check_pc.py`: hardware check (standard library only); `install_torch.py` picks
+  the PyTorch build for the card (CUDA 12.6 for GTX 10xx up to RTX 40xx, 12.8 for RTX 50xx).
 - Tests: `python -m pytest tests`. These run the whole flow with a tiny random-weight
   model on the CPU, so they test the plumbing but not picture quality.

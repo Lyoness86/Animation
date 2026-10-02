@@ -18,7 +18,7 @@ if not exist .venv\Scripts\python.exe (
 .venv\Scripts\python -m pip install --upgrade pip
 echo.
 echo Installing PyTorch for NVIDIA graphics cards (about 3 GB)...
-.venv\Scripts\python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+.venv\Scripts\python install_torch.py
 if errorlevel 1 goto failed
 .venv\Scripts\python -m pip install -r requirements.txt
 if errorlevel 1 goto failed

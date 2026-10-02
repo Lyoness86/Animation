@@ -1,4 +1,4 @@
-diffusers>=0.37
+diffusers>=0.40
 transformers>=4.57
 accelerate>=1.2
 huggingface_hub
@@ -7,3 +7,4 @@ pillow
 rembg
 onnxruntime
 pytest
+psutil
