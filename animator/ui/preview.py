@@ -29,10 +29,13 @@ class PreviewWidget(QWidget):
         self.setFocusPolicy(Qt.ClickFocus)
 
     # ------------------------------------------------------------ drawing
+    fast = False  # set while playing: draw at lower resolution to keep up
+
     def refresh(self):
-        frame, boxes = self.scene.render(self.time, PREVIEW_W, PREVIEW_H)
+        sc = 2 / 3 if self.fast else 1.0
+        frame, boxes = self.scene.render(self.time, int(PREVIEW_W * sc), int(PREVIEW_H * sc))
         self._image = bgr_to_qimage(to_bgr_over(frame))
-        self._boxes = boxes
+        self._boxes = {k: (tuple(v / sc for v in b) if b else b) for k, b in boxes.items()}
         self.update()
 
     def _view_rect(self):

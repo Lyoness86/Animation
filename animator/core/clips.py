@@ -57,6 +57,8 @@ class Clip:
         self.tracks = {ch: sorted((float(k[0]), float(k[1]), k[2] if len(k) > 2 else "ease")
                                   for k in keys)
                        for ch, keys in data["tracks"].items()}
+        self.tangents = {ch: _tangents(keys, self.loop, self.duration)
+                         for ch, keys in self.tracks.items()}
 
     def sample(self, t):
         if self.loop:
@@ -70,13 +72,53 @@ class Clip:
             elif t >= keys[-1][0]:
                 v = keys[-1][1]
             else:
-                for (t0, v0, e), (t1, v1, _) in zip(keys, keys[1:]):
+                tans = self.tangents[ch]
+                for i, ((t0, v0, e), (t1, v1, _)) in enumerate(zip(keys, keys[1:])):
                     if t0 <= t <= t1:
-                        u = (t - t0) / (t1 - t0) if t1 > t0 else 1.0
-                        v = v0 + (v1 - v0) * EASINGS.get(e, EASINGS["ease"])(u)
+                        h = t1 - t0
+                        u = (t - t0) / h if h > 0 else 1.0
+                        if e == "ease":
+                            # smooth curve through the keys (no stop at each key)
+                            u2, u3 = u * u, u * u * u
+                            v = ((2 * u3 - 3 * u2 + 1) * v0 + (u3 - 2 * u2 + u) * h * tans[i]
+                                 + (-2 * u3 + 3 * u2) * v1 + (u3 - u2) * h * tans[i + 1])
+                        else:
+                            v = v0 + (v1 - v0) * EASINGS.get(e, EASINGS["ease"])(u)
                         break
             pose[ch] = v
         return pose
+
+
+def _tangents(keys, loop, duration):
+    """Slopes at each key for a smooth curve that never overshoots (a
+    monotone cubic): zero at peaks, holds and the clip's start/end, so values
+    like weights never go past their keys."""
+    n = len(keys)
+    m = [0.0] * n
+    if n < 2:
+        return m
+    t = [k[0] for k in keys]
+    v = [k[1] for k in keys]
+    for i in range(n):
+        if 0 < i < n - 1:
+            h0, h1 = t[i] - t[i - 1], t[i + 1] - t[i]
+            v_prev = v[i - 1]
+        elif loop and n > 2 and abs(t[0]) < 1e-9 and abs(t[-1] - duration) < 1e-9:
+            # looping clip: the first and last key are the same moment
+            h0, h1 = t[-1] - t[-2], t[1] - t[0]
+            v_prev = v[-2]
+            i_next = 1
+        else:
+            continue
+        nxt = v[i + 1] if 0 < i < n - 1 else v[i_next]
+        if h0 <= 0 or h1 <= 0:
+            continue
+        d0, d1 = (v[i] - v_prev) / h0, (nxt - v[i]) / h1
+        if d0 * d1 > 0:
+            m[i] = 3 * (h0 + h1) / ((2 * h1 + h0) / d0 + (h1 + 2 * h0) / d1)
+    if loop and n > 2 and abs(t[0]) < 1e-9 and abs(t[-1] - duration) < 1e-9:
+        m[-1] = m[0]
+    return m
 
 
 def blend(a, b, w):

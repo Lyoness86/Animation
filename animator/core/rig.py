@@ -309,6 +309,19 @@ class Rig:
             w = out.get(f"arm_{side}.ikw", 0.0)
             if w > 1e-3:
                 self._reach(out, side, w)
+        # when an animation poses an arm, straighten the hand in line with
+        # the forearm - a hand drawn bent (e.g. resting on a hip) would
+        # otherwise look like a broken wrist when the arm is lifted
+        for side in "lr":
+            hand, fore = "hand_" + side, "forearm_" + side
+            if out.get(hand + ".dirw", 0.0) > 0:
+                continue  # the animation sets the hand itself
+            w = max(out.get(f"upper_arm_{side}.dirw", 0.0), out.get(fore + ".dirw", 0.0),
+                    out.get(f"arm_{side}.ikw", 0.0))
+            if w > 1e-3:
+                rot = out.get(hand + ".rot", 0.0)
+                straight = self.rest_angle[fore] - self.rest_angle[hand]
+                out[hand + ".rot"] = rot + min(w, 1.0) * _wrap(straight - rot)
         for k in [k for k in out if k.endswith(helpers)]:
             del out[k]
         return out
@@ -384,9 +397,17 @@ class Rig:
         # pixels right along a hand belong to that hand (fingers resting on a
         # hip or thigh would otherwise be left behind when the arm moves)
         yy, xx = np.nonzero(solid)
+        img_lab = cv2.cvtColor(self.image[..., :3], cv2.COLOR_BGR2Lab).astype(np.float32)
         for side in "lr":
-            d = _seg_dist(xx, yy, J["wrist_" + side], J["hand_" + side])
-            near = d < 0.11 * sw
+            wr, tip = J["wrist_" + side], J["hand_" + side]
+            d = _seg_dist(xx, yy, wr, tip + 0.3 * (tip - wr))  # fingers can reach past the tip dot
+            near = d < 0.15 * sw
+            # ...but only hand-coloured pixels (skin/glove), not the clothes under it
+            core = _seg_dist(xx, yy, wr, tip) < 0.05 * sw
+            if core.sum() >= 5:
+                colour = np.median(img_lab[yy[core], xx[core]], axis=0)
+                cd = np.sqrt((((img_lab[yy, xx] - colour) * np.array([0.5, 1, 1], np.float32)) ** 2).sum(1))
+                near &= (cd < 22) | (d < 0.05 * sw)
             lab[yy[near], xx[near]] = BONE_NAMES.index("hand_" + side)
         return np.where(solid, lab, 255).astype(np.uint8)
 

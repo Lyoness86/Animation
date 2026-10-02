@@ -351,6 +351,7 @@ class MainWindow(QMainWindow):
 
     def toggle_play(self):
         self.playing = not self.playing
+        self.preview.fast = self.playing
         self.play_btn.setText("⏸  Pause" if self.playing else "▶  Play")
         if self.playing:
             if self.preview.time >= self.scene.duration() - 0.05:
@@ -359,6 +360,7 @@ class MainWindow(QMainWindow):
             self.timer.start()
         else:
             self.timer.stop()
+            self.preview.refresh()  # full quality when paused
 
     def _tick(self):
         now = time.perf_counter()
