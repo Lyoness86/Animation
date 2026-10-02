@@ -155,7 +155,7 @@ class Scene:
             if b:
                 box[:] = [min(box[0], b[0]), min(box[1], b[1]), max(box[2], b[2]), max(box[3], b[3])]
 
-        for kind, item in draw_list(ch.props, pose):
+        for kind, item in draw_list(ch.props, pose, getattr(rig, "draw_order", None)):
             if kind == "prop":
                 grow(draw_prop(frame, item, rig, mats, place, pose))
                 continue
@@ -165,10 +165,10 @@ class Scene:
         return tuple(box) if box[0] < math.inf else None
 
 
-def draw_list(props, pose):
+def draw_list(props, pose, order=None):
     """Body parts in drawing order with held objects slotted in according to
     their layer (an animation can override it with prop_l/prop_r.layer)."""
-    order = [("part", n) for n in DRAW_ORDER]
+    order = [("part", n) for n in (order or DRAW_ORDER)]
     for prop in props:
         layer = pose.get(f"prop_{prop.hand}.layer", -1.0)
         layer = prop.layer if layer < -0.5 else int(round(layer))

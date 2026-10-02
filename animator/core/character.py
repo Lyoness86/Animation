@@ -91,6 +91,8 @@ class Character:
     start_view: str = "front"
     props: list = field(default_factory=list)
     name: str = ""
+    side_view_walk: bool = True  # walk in the side view (if there is one)
+    alive: float = 1.0           # strength of the constant subtle "alive" motion
 
     def __post_init__(self):
         self.views.setdefault("front", self.rig)
@@ -104,8 +106,16 @@ class Character:
         segs, t, p, left = [], 0.0, tuple(self.pos), False
         view = self.start_view if self.start_view in self.views else "front"
         rest = "idle"
+        walk_return = None  # view to turn back to after an automatic side-view walk
         for ai, a in enumerate(self.actions):
             n = len(segs)
+            if walk_return and a.kind not in ("walk", "stop", "turn"):
+                # ...and back to the original view before doing anything else
+                segs.append(Segment(t, t + TURN_TIME, rest, p, p, left, walk_return, from_view=view))
+                t = segs[-1].t1
+                view, walk_return = walk_return, None
+            if a.kind == "turn":
+                walk_return = None
             if a.kind == "idle":
                 d = max(a.duration, 0.1)
                 segs.append(Segment(t, t + d, rest, p, p, left, view))
@@ -116,7 +126,16 @@ class Character:
                 d = max(math.hypot(dx, dy) / speed, 0.3)
                 if abs(dx) > 1:
                     left = dx < 0
-                segs.append(Segment(t, t + d, "walk", p, tuple(a.target), left, view))
+                walk_view = view
+                if self.side_view_walk and "side" in self.views and abs(dx) > abs(dy) * 0.5:
+                    walk_view = "side"
+                    if view != "side":  # turn to the side first...
+                        if walk_return is None:
+                            walk_return = view
+                        segs.append(Segment(t, t + TURN_TIME, rest, p, p, left, "side", from_view=view))
+                        t = segs[-1].t1
+                        view = "side"
+                segs.append(Segment(t, t + d, "walk", p, tuple(a.target), left, walk_view))
                 p = tuple(a.target)
             elif a.kind == "turn":
                 if not a.view or a.view not in self.views or a.view == view:
@@ -133,6 +152,9 @@ class Character:
             if len(segs) > n:
                 segs[-1].action = ai
             t = segs[-1].t1 if segs else t
+        if walk_return:
+            segs.append(Segment(t, t + TURN_TIME, rest, p, p, left, walk_return, from_view=view))
+            t, view = segs[-1].t1, walk_return
         segs.append(Segment(t, math.inf, rest, p, p, left, view))
         return segs
 
@@ -184,9 +206,27 @@ class Character:
             prev_pose = rig.resolve_pose(lib[prev.clip].sample(prev.t1 - prev.t0))
             u = local / BLEND_TIME
             pose = blend(prev_pose, pose, u * u * (3 - 2 * u))
+        if self.alive:
+            pose = _add_alive(pose, t, self.alive, seed=len(self.name))
         if s.p0 != s.p1 and math.isfinite(s.t1):
             u = min(local / (s.t1 - s.t0), 1.0)
             pos = (s.p0[0] + (s.p1[0] - s.p0[0]) * u, s.p0[1] + (s.p1[1] - s.p0[1]) * u)
         else:
             pos = s.p1
         return pose, pos, s.facing_left
+
+
+def _add_alive(pose, t, k, seed=0):
+    """Layer a constant, subtle 'alive' motion over any animation: breathing,
+    a slight weight shift and a small head drift on slow, unrelated rhythms,
+    so a character never looks frozen or mechanical."""
+    p = dict(pose)
+    ph = seed * 0.7
+    p["torso.len"] = p.get("torso.len", 1.0) + k * 0.007 * math.sin(2 * math.pi * t / 3.6 + ph)
+    p["root.rot"] = p.get("root.rot", 0.0) + k * 0.6 * math.sin(2 * math.pi * t / 5.3 + ph)
+    p["head.rot"] = p.get("head.rot", 0.0) + k * (1.2 * math.sin(2 * math.pi * t / 4.4 + 1 + ph)
+                                                + 0.5 * math.sin(2 * math.pi * t / 1.9 + ph))
+    for side, sgn in (("l", -1), ("r", 1)):
+        key = f"upper_arm_{side}.rot"
+        p[key] = p.get(key, 0.0) + k * sgn * 0.8 * math.sin(2 * math.pi * t / 3.6 + ph + 0.5)
+    return p

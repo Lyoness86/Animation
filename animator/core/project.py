@@ -84,7 +84,8 @@ def save_project(scene, path):
             data["characters"].append({
                 "name": ch.name, "views": views, "start_view": ch.start_view,
                 "position": list(ch.pos), "height": ch.height, "mirrored": ch.mirrored,
-                "actions": [_action_to_dict(a) for a in ch.actions], "props": props})
+                "actions": [_action_to_dict(a) for a in ch.actions], "props": props,
+                "side_view_walk": ch.side_view_walk, "alive": ch.alive})
         z.writestr("project.json", json.dumps(data, indent=2))
     tmp.replace(path)
     return path
@@ -117,7 +118,8 @@ def load_project(path, progress=None):
                 if progress:
                     progress(f"Rebuilding {cd['name']} ({view})...")
                 rigs[view] = Rig(_png_read(z, vd["image"]), {k: tuple(v) for k, v in vd["joints"].items()},
-                                 vd.get("name", cd["name"]), faces_left=vd.get("faces_left", False))
+                                 vd.get("name", cd["name"]), faces_left=vd.get("faces_left", False),
+                                 profile=(view == "side"))
             props = [Prop(_png_read(z, p["image"]), p.get("name", "Object"), p.get("hand", "r"),
                           p.get("size", 0.15), tuple(p.get("offset", (0, 0))), p.get("rotation", 0.0),
                           p.get("layer", 2), tuple(p.get("grip", (0.5, 0.6))), p.get("follow", 0.0))
@@ -127,6 +129,7 @@ def load_project(path, progress=None):
                        for a in cd.get("actions", [])]
             ch = Character(rigs.get("front") or next(iter(rigs.values())), tuple(cd["position"]),
                            cd["height"], cd.get("mirrored", False), actions, rigs,
-                           cd.get("start_view", "front"), props, cd.get("name", ""))
+                           cd.get("start_view", "front"), props, cd.get("name", ""),
+                           cd.get("side_view_walk", True), cd.get("alive", 1.0))
             scene.characters.append(ch)
     return scene

@@ -110,9 +110,12 @@ def _premultiply(bgra):
 class Rig:
     """A ready-to-animate character."""
 
-    def __init__(self, rgba, joints, name="Character", faces_left=False):
+    def __init__(self, rgba, joints, name="Character", faces_left=False, profile=False):
         self.name = name
         self.faces_left = faces_left  # picture shows the character facing left
+        # profile (side view): the far arm/leg is hidden behind the near one,
+        # so the visible limb is used for both, the far copy drawn darker behind
+        self.profile = profile
         self.image = rgba
         self.joints = {k: tuple(v) for k, v in joints.items()}
         self.build()
@@ -122,9 +125,11 @@ class Rig:
         alpha = self.image[..., 3]
         J = derived_joints(self.joints, alpha)
         self.J = J
-        sw = max(np.linalg.norm(J["shoulder_l"] - J["shoulder_r"]), 10.0)
-        head_len = np.linalg.norm(J["head_top"] - J["neck"])
         self.height = float(J["feet"][1] - J["head_top"][1])
+        # body-part sizes scale with shoulder width; in a side view both
+        # shoulders overlap, so never let it drop below a fraction of height
+        sw = max(np.linalg.norm(J["shoulder_l"] - J["shoulder_r"]), 0.13 * self.height, 10.0)
+        head_len = np.linalg.norm(J["head_top"] - J["neck"])
 
         h, w = alpha.shape
         solid = alpha > 0
@@ -176,8 +181,10 @@ class Rig:
             # fill from shirt pixels only (never from the arm's own skin)
             # (transparent pixels still hold the old background colour, so
             # they are excluded as sources too)
-            fill_mask = cv2.dilate((arms & solid).astype(np.uint8) * 255, np.ones((5, 5), np.uint8))
-            fill_mask[alpha < 128] = 255
+            # fill only from torso (shirt) pixels - never from arms, hair or
+            # the semi-transparent edge, which made muddy dark patches
+            fill_mask = np.where((labels == idx["torso"]) & (alpha >= 250), 0, 255).astype(np.uint8)
+            fill_mask = cv2.dilate(fill_mask, np.ones((3, 3), np.uint8))
             by, bx = np.nonzero(hull)
             m = int(0.1 * sw)
             y0, y1 = max(by.min() - m, 0), min(by.max() + m + 1, h)
@@ -197,16 +204,30 @@ class Rig:
         yy, xx = np.mgrid[0:h, 0:w]
         for name, parent, j0, j1, th in BONES:
             host = parent or ("torso" if name.startswith("thigh") else None)
-            if host is None:
-                continue
+            if host is None or name.startswith("upper_arm"):
+                continue  # shoulders are filled with shirt instead (no stuck sleeve copy)
             thick = 0.42 * head_len if th is None else th * sw
             r = 0.7 * thick
             near = ((xx - J[j0][0]) ** 2 + (yy - J[j0][1]) ** 2) < r * r
             masks[host] = masks[host] | (near & masks[name])
 
+        self.draw_order = list(DRAW_ORDER)
+        far_img = None
+        if self.profile:
+            for limb in ("upper_arm", "forearm", "hand", "thigh", "shin", "foot"):
+                both = masks[limb + "_l"] | masks[limb + "_r"]
+                masks[limb + "_l"], masks[limb + "_r"] = both.copy(), both
+            far_img = self.image.copy()
+            far_img[..., :3] = (far_img[..., :3].astype(np.float32) * 0.78).astype(np.uint8)
+            # the far arm stays hidden behind the body; the far leg shows
+            self.draw_order = ["thigh_l", "shin_l", "foot_l", "thigh_r", "shin_r", "foot_r",
+                               "torso", "head", "upper_arm_r", "forearm_r", "hand_r"]
+
         self.parts = {}
         for name in BONE_NAMES:
             src = torso_img if name == "torso" else self.image
+            if far_img is not None and name.endswith("_l"):
+                src = far_img
             m = masks[name] & (alpha > 0)
             if not m.any():
                 continue
@@ -441,7 +462,15 @@ class Rig:
         gap = min([np.sqrt((((c - colour) * wgt) ** 2).sum()) for c in others] + [90.0])
         similar = (dist < min(45.0, 0.5 * gap)) & solid
         hip_y = int((J["hip_l"][1] + J["hip_r"][1]) / 2)
-        similar[hip_y:] = False
+        # below the hips hair may still hang down beside the body, but the
+        # legs (jeans can be hair-coloured) are never hair
+        yy, xx = np.mgrid[0:h, 0:w]
+        legs = np.zeros((h, w), bool)
+        for name, parent, j0, j1, th in BONES:
+            if name.startswith(("thigh", "shin", "foot")):
+                legs |= _seg_dist(xx, yy, J[j0], J[j1]) < 0.9 * th * max(
+                    np.linalg.norm(J["shoulder_l"] - J["shoulder_r"]), 0.13 * self.height)
+        similar[hip_y:] &= ~legs[hip_y:]
         similar = cv2.morphologyEx(similar.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
         n, cc = cv2.connectedComponents(similar, connectivity=8)
         ids = np.unique(cc[seed & (similar > 0)])

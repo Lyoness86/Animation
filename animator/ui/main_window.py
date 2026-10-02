@@ -535,18 +535,21 @@ class MainWindow(QMainWindow):
         self.preview.refresh()
 
     # ------------------------------------------------------------ views
-    def _make_rig(self, path, title):
-        """Background removal + joint detection + 'check the dots'. Returns Rig or None."""
+    def _make_rig(self, path, title, front=None, view="front"):
+        """Background removal + joint detection + 'check the dots'. Returns Rig
+        or None. front = the character's front rig, used to place the dots on
+        side/back pictures."""
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             cut = prepare_cutout(read_image(path))
-            joints, method = detect_joints(cut)
+            ref = (front.joints, front.image) if front is not None else None
+            joints, method = detect_joints(cut, reference=ref, view=view)
         except Exception as e:
             QApplication.restoreOverrideCursor()
             QMessageBox.warning(self, title, f"Could not process this image:\n{e}")
             return None
         QApplication.restoreOverrideCursor()
-        dlg = RigCheckDialog(cut, joints, method, Path(path).stem, self)
+        dlg = RigCheckDialog(cut, joints, method, Path(path).stem, self, profile=(view == "side"))
         return dlg.rig if dlg.exec() == QDialog.Accepted else None
 
     def add_view(self):
@@ -561,7 +564,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, f"Choose the {label} picture of {ch.name}", "", IMAGE_FILTER)
         if not path:
             return
-        rig = self._make_rig(path, "Add view")
+        rig = self._make_rig(path, "Add view", front=ch.rig, view=view)
         if rig is None:
             return
         if view != "back":

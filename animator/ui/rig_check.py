@@ -72,17 +72,19 @@ class DotsView(QWidget):
 
 
 class RigCheckDialog(QDialog):
-    def __init__(self, cutout, joints, method, name, parent=None):
+    def __init__(self, cutout, joints, method, name, parent=None, profile=False):
         super().__init__(parent)
         self.setWindowTitle(f"Check character: {name}")
         self.cutout, self.name = cutout, name
         self.auto_joints = dict(joints)
         self.joints = dict(joints)
         self.show_parts = True
-        self.rig = Rig(cutout, self.joints, name)
+        self.profile = profile
+        self.rig = Rig(cutout, self.joints, name, profile=profile)
 
-        found = ("The body was found automatically (AI pose detection)." if method == "ai" else
-                 "AI pose detection could not find the body, so the dots are a rough guess.")
+        found = {"ai": "The body was found automatically (AI pose detection).",
+                 "from_front": "Dots placed using the front view's dots (AI is unreliable on side/back views).",
+                 }.get(method, "AI pose detection could not find the body, so the dots are a rough guess.")
         info = QLabel(f"<b>{found}</b><br>Coloured areas = body parts that will move. "
                       "If a dot is clearly in the wrong place, drag it onto the right joint "
                       "(red = left side of the picture, blue = right side). Otherwise just click "
@@ -113,7 +115,7 @@ class RigCheckDialog(QDialog):
 
     def rebuild(self):
         self.setCursor(Qt.WaitCursor)
-        self.rig = Rig(self.cutout, self.joints, self.name)
+        self.rig = Rig(self.cutout, self.joints, self.name, profile=self.profile)
         self.unsetCursor()
         self.view.update()
 

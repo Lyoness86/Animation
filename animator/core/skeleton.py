@@ -7,6 +7,7 @@ import os
 import urllib.request
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 JOINTS = ["head_top", "neck",
@@ -176,9 +177,121 @@ def estimate_from_silhouette(rgba):
     return {k: (float(v[0]), float(v[1])) for k, v in j.items()}
 
 
-def detect_joints(rgba):
-    """Returns (joints, method) where method is 'ai' or 'estimated'."""
+def plausible(j, rgba):
+    """Stricter check of an AI result: legs must stand on the ground and the
+    body parts must be at believable heights (catches the AI seeing a side
+    view as two overlapping people)."""
+    ys = np.nonzero(rgba[..., 3] > 128)[0]
+    top, H = ys.min(), ys.max() - ys.min()
+    f = lambda k: (j[k][1] - top) / H
+    try:
+        return (all(f("ankle_" + s) > 0.75 for s in "lr")
+                and all(0.3 < f("hip_" + s) < 0.75 for s in "lr")
+                and all(f("hip_" + s) < f("knee_" + s) < f("ankle_" + s) for s in "lr")
+                and all(0.1 < f("shoulder_" + s) < 0.55 for s in "lr"))
+    except KeyError:
+        return False
+
+
+def estimate_from_reference(rgba, ref_joints, ref_rgba, view):
+    """Joints for a side / back picture, using the front view's (checked)
+    dots: the same heights, placed on this picture's body centre line (hair
+    ignored). AI pose detection is unreliable on cartoon side/back views."""
+    alpha = rgba[..., 3] > 128
+    h, w = alpha.shape
+    ys, xs = np.nonzero(alpha)
+    top, H = ys.min(), ys.max() - ys.min()
+    ref_alpha = ref_rgba[..., 3]
+    rys = np.nonzero(ref_alpha > 128)[0]
+    rtop, rH = rys.min(), rys.max() - rys.min()
+    ref = {k: np.array(v, float) for k, v in ref_joints.items()}
+    rcx = (ref["hip_l"][0] + ref["hip_r"][0]) / 2
+    fy = {k: (v[1] - rtop) / rH for k, v in ref.items()}
+
+    # body = character minus hair (hair colour sampled at the top of the head)
+    lab = cv2.cvtColor(np.ascontiguousarray(rgba[..., :3]), cv2.COLOR_BGR2Lab).astype(np.float32)
+    band = alpha[top:top + max(int(0.06 * H), 2)]
+    by, bx = np.nonzero(band)
+    hair_col = np.median(lab[top + by, bx], axis=0)
+    hair = (np.sqrt((((lab - hair_col) * np.array([0.3, 1, 1], np.float32)) ** 2).sum(2)) < 30) & alpha
+    body = alpha & ~hair
+
+    def centre(y, wide=0.015):
+        y0, y1 = int(max(y - wide * H, 0)), int(min(y + wide * H + 1, h))
+        cols = np.nonzero(body[y0:y1].any(axis=0))[0]
+        if len(cols) < 3:
+            cols = np.nonzero(alpha[y0:y1].any(axis=0))[0]
+        return float(np.median(cols)) if len(cols) else float(np.median(xs))
+
+    j = {}
+    if view == "side":
+        for k in ("shoulder", "elbow", "wrist", "hip", "knee", "ankle"):
+            for s, dx in (("l", -2.0), ("r", 2.0)):
+                y = top + fy[f"{k}_{s}"] * H
+                j[f"{k}_{s}"] = (centre(y) + dx, y)
+        # the arm overlaps the body in profile: find it by the skin colour of
+        # the front view's hands (forearm/hand rows have no other skin)
+        rlab = cv2.cvtColor(np.ascontiguousarray(ref_rgba[..., :3]), cv2.COLOR_BGR2Lab).astype(np.float32)
+        samples = []
+        for s in "lr":
+            wr = ref["wrist_" + s]
+            tip = ref.get("hand_" + s, wr + 0.35 * (wr - ref["elbow_" + s]))
+            mx, my = (wr + tip) / 2
+            r = max(int(0.012 * rH), 2)
+            patch = rlab[int(my) - r:int(my) + r + 1, int(mx) - r:int(mx) + r + 1]
+            pa = ref_alpha[int(my) - r:int(my) + r + 1, int(mx) - r:int(mx) + r + 1] > 200
+            if pa.any():
+                samples.append(patch[pa])
+        if samples:
+            skin_col = np.median(np.concatenate(samples), axis=0)
+            skin = (np.sqrt((((lab - skin_col) * np.array([0.4, 1, 1], np.float32)) ** 2).sum(2)) < 20) & body
+
+            def arm_x(y):
+                y0, y1 = int(max(y - 0.02 * H, 0)), int(min(y + 0.02 * H + 1, h))
+                cols = np.nonzero(skin[y0:y1].any(axis=0))[0]
+                return float(np.median(cols)) if len(cols) >= 4 else None
+
+            ex = arm_x(top + fy["elbow_r"] * H)
+            wx = arm_x(top + fy["wrist_r"] * H)
+            if ex is not None and wx is not None:
+                for s, dx in (("l", -2.0), ("r", 2.0)):
+                    j["elbow_" + s] = (ex + dx, j["elbow_" + s][1])
+                    j["wrist_" + s] = (wx + dx, j["wrist_" + s][1])
+                    j["shoulder_" + s] = (ex + dx, j["shoulder_" + s][1])
+        # feet point the way the character faces: the side where the shoe sticks out
+        gy = int(top + 0.97 * H)
+        cols = np.nonzero(alpha[gy:int(top + H) + 1].any(axis=0))[0]
+        ax = (j["ankle_l"][0] + j["ankle_r"][0]) / 2
+        forward = -1 if len(cols) and (ax - cols.min()) > (cols.max() - ax) else 1
+        reach = (ax - cols.min()) if forward < 0 else (cols.max() - ax)
+        for s in "lr":
+            j["toe_" + s] = (ax + forward * 0.8 * reach, top + 0.98 * H)
+            j["hand_" + s] = (j["wrist_" + s][0], j["wrist_" + s][1] + 0.06 * H)
+    else:  # back views: the front layout, mirrored, scaled to this picture
+        cx = centre(top + fy["hip_l"] * H, wide=0.04)
+        for k, v in ref.items():
+            if k in ("neck", "head_top"):
+                continue
+            mk = k[:-1] + ("r" if k.endswith("l") else "l") if k[-2:] in ("_l", "_r") else k
+            j[mk] = (cx - (v[0] - rcx) * H / rH, top + fy[k] * H)
+    sh = (np.array(j["shoulder_l"]) + np.array(j["shoulder_r"])) / 2
+    j["neck"] = (sh[0], top + fy["neck"] * H)
+    j["head_top"] = (centre(top + 0.02 * H), float(top))
+    for k in ("hand_l", "hand_r", "toe_l", "toe_r"):
+        base = np.array(j[("wrist_" if k.startswith("hand") else "ankle_") + k[-1]])
+        j[k] = tuple(_onto_body(rgba[..., 3], base, np.array(j[k])))
+    return {k: (float(v[0]), float(v[1])) for k, v in j.items()}
+
+
+def detect_joints(rgba, reference=None, view="front"):
+    """Returns (joints, method) where method is 'ai', 'from_front' or
+    'estimated'. reference = (front joints, front BGRA picture) for extra views."""
+    if reference is not None and view in ("side", "back", "three_quarter_back"):
+        return estimate_from_reference(rgba, reference[0], reference[1], view), "from_front"
     j = detect_mediapipe(rgba)
-    if j is not None:
+    if j is not None and plausible(j, rgba):
         return j, "ai"
+    if reference is not None:
+        return estimate_from_reference(rgba, reference[0], reference[1], "back"
+                                       if view == "back" else "side"), "from_front"
     return estimate_from_silhouette(rgba), "estimated"
