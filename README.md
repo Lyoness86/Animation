@@ -30,6 +30,28 @@ Double-click **`run.bat`**.
    transparent video (MOV ProRes 4444 is the best choice for CapCut; if CapCut
    doesn't show transparency use "MP4 on green screen" + CapCut's *Chroma key*).
 
+## Projects
+
+**Save project** writes one `.puppet` file containing everything: background
+(image or video), characters (pictures + checked dots), positions, sizes,
+layer order, flips, views, held objects and every character's step list.
+Copy it to any PC and **Open project...** it there. `examples/garden_demo.puppet`
+is a ready-made example.
+
+## Views (turning)
+
+Select a character, **Add view (side, back...)**, pick which view the picture
+shows (3/4, side, 3/4 back, back), then add a **Turn to view...** step. The
+character spins (quick squeeze) and swaps picture halfway. Walking in a side
+view looks much better than in the front view. "Starts:" chooses the first view.
+
+## Held objects
+
+**Hold test glass** or **Hold object...** (any picture on a plain background).
+Choose which hand (by side of the picture), size, position, rotation and
+whether it is drawn behind the body, behind the hand, in front of the hand or
+in front of everything. The **Drink** animations lift it to the mouth.
+
 ## Adding animations
 
 Animations are plain text files in `animator/animations/`. Copy one, change

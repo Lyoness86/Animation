@@ -102,8 +102,9 @@ def _premultiply(bgra):
 class Rig:
     """A ready-to-animate character."""
 
-    def __init__(self, rgba, joints, name="Character"):
+    def __init__(self, rgba, joints, name="Character", faces_left=False):
         self.name = name
+        self.faces_left = faces_left  # picture shows the character facing left
         self.image = rgba
         self.joints = {k: tuple(v) for k, v in joints.items()}
         self.build()
@@ -247,12 +248,23 @@ class Rig:
         W /= np.maximum(W.sum(axis=2, keepdims=True), 1e-6)
         return bones, np.ascontiguousarray(W, dtype=np.float32)
 
+    def hand_point(self, side):
+        """Rest-picture point where a held object sits (palm), side l/r."""
+        w, e = self.J["wrist_" + side], self.J["elbow_" + side]
+        return w + 0.2 * (w - e)
+
+    def mouth_point(self):
+        return self.J["neck"] + 0.3 * (self.J["head_top"] - self.J["neck"])
+
     def resolve_pose(self, pose):
-        """Turn 'point this bone in direction X' channels (bone.dir with
-        weight bone.dirw) into ordinary rotations. Directions are screen
-        angles (0 = down, 90 = right, 180 = up), so e.g. a wave looks the same
-        whatever pose the arm was drawn in."""
-        if not any(k.endswith(".dirw") for k in pose):
+        """Turn the 'helper' channels into ordinary rotations:
+        - bone.dir/bone.dirw: point a bone in a screen direction (0 = down,
+          90 = right, 180 = up), so e.g. a wave looks the same whatever pose
+          the arm was drawn in;
+        - arm_l/arm_r.ikw (+ikx, iky): reach that hand to the mouth (plus an
+          offset in character heights) - two-bone inverse kinematics."""
+        helpers = (".dir", ".dirw", ".ikw", ".ikx", ".iky")
+        if not any(k.endswith(helpers) for k in pose):
             return pose
         out = dict(pose)
         accum = {}
@@ -262,13 +274,47 @@ class Rig:
             w = out.get(name + ".dirw", 0.0)
             if w > 0 and name + ".dir" in out:
                 target = out[name + ".dir"] - self.rest_angle[name] - base
-                delta = (target - rot + 180) % 360 - 180
-                rot = rot + w * delta
+                rot = rot + w * _wrap(target - rot)
                 out[name + ".rot"] = rot
             accum[name] = base + rot
-        for k in [k for k in out if k.endswith(".dir") or k.endswith(".dirw")]:
+        for side in "lr":
+            w = out.get(f"arm_{side}.ikw", 0.0)
+            if w > 1e-3:
+                self._reach(out, side, w)
+        for k in [k for k in out if k.endswith(helpers)]:
             del out[k]
         return out
+
+    def _reach(self, out, side, w):
+        J = self.J
+        up, fo = "upper_arm_" + side, "forearm_" + side
+        mats = self.bone_matrices(out)
+        S = _apply(mats["torso"], J["shoulder_" + side])
+        T = _apply(mats["head"], self.mouth_point())
+        T = T + np.array([out.get(f"arm_{side}.ikx", 0.0), out.get(f"arm_{side}.iky", 0.0)]) * self.height
+        L1 = np.linalg.norm(J["elbow_" + side] - J["shoulder_" + side]) * out.get(up + ".len", 1.0)
+        L2 = np.linalg.norm(self.hand_point(side) - J["elbow_" + side]) * out.get(fo + ".len", 1.0)
+        v = T - S
+        d0 = max(np.linalg.norm(v), 1e-6)
+        u = v / d0
+        d = min(max(d0, abs(L1 - L2) + 1e-3), L1 + L2 - 1e-3)
+        cos_a = (L1 * L1 + d * d - L2 * L2) / (2 * L1 * d)
+        sin_a = math.sqrt(max(0.0, 1 - cos_a * cos_a))
+        n = np.array([-u[1], u[0]])
+        cands = [S + L1 * (u * cos_a + n * sin_a), S + L1 * (u * cos_a - n * sin_a)]
+        centre = _apply(mats["torso"], J["pelvis"])[0]
+        sign = -1 if side == "l" else 1
+        # natural arm: elbow hangs down and a little out to the side
+        E = max(cands, key=lambda e: (e[1] - S[1]) + 0.5 * (e[0] - centre) * sign)
+        H = S + u * d
+        base = out.get("root.rot", 0.0) + out.get("torso.rot", 0.0)
+        a_up = _screen_angle(E - S)
+        a_fo = _screen_angle(H - E)
+        rot_up = out.get(up + ".rot", 0.0)
+        rot_up += w * _wrap(a_up - self.rest_angle[up] - base - rot_up)
+        rot_fo = out.get(fo + ".rot", 0.0)
+        rot_fo += w * _wrap(a_fo - self.rest_angle[fo] - base - rot_up - rot_fo)
+        out[up + ".rot"], out[fo + ".rot"] = rot_up, rot_fo
 
     def _segment(self, J, solid, sw, head_len):
         """Label each pixel with its body part. Distances are measured
@@ -440,6 +486,19 @@ class Rig:
             local = _T(p0) @ _R(g(name + ".rot", 0.0)) @ S @ _T(-p0)
             world[name] = (world[parent] if parent else root) @ local
         return world
+
+
+def _wrap(a):
+    return (a + 180) % 360 - 180
+
+
+def _screen_angle(v):
+    """0 = pointing down, 90 = right, 180 = up (counter-clockwise +)."""
+    return math.degrees(math.atan2(v[0], v[1]))
+
+
+def _apply(M, p):
+    return (M @ np.array([p[0], p[1], 1.0]))[:2]
 
 
 def _T(v):

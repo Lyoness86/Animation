@@ -8,14 +8,26 @@ Clips are authored for a character facing/moving to the right; the renderer
 mirrors them for characters facing left.
 
 Each key is [time, value] or [time, value, easing] where easing (to the
-next key) is one of: ease (default), linear, in, out.
+next key) is one of: ease (default), linear, in, out, step.
+
+More channels:
+  bone.dir / bone.dirw   point a bone in a screen direction (0 = down,
+                         90 = right, 180 = up), blended in by dirw (0..1)
+  arm_l/arm_r.ikw/ikx/iky  reach the hand to the mouth (+ offset in character
+                         heights) with weight ikw - works for any character
+  prop_l/prop_r.tilt     extra rotation of an object held in that hand
+  prop_l/prop_r.layer    draw order of that object (-1 = its own setting,
+                         0 behind body, 1 behind hand, 2 in front of hand,
+                         3 in front of everything) - use "step" easing
+Clip options: "idle_after": clip to rest with afterwards (e.g. sit_idle),
+"hidden": true = no button (used for helper clips).
 
 Adding a new animation = dropping a new .json file in the folder."""
 import json
 from pathlib import Path
 
 ANIM_DIR = Path(__file__).resolve().parents[1] / "animations"
-DEFAULTS = {"len": 1.0, "sy": 1.0}
+DEFAULTS = {"len": 1.0, "sy": 1.0, "layer": -1.0}
 
 
 def default_value(channel):
@@ -27,6 +39,7 @@ EASINGS = {
     "linear": lambda u: u,
     "out": lambda u: 1 - (1 - u) ** 2,         # fast start, slows down
     "in": lambda u: u * u,                     # slow start, speeds up
+    "step": lambda u: 0.0,                     # hold, then jump at the next key
 }
 
 
@@ -36,6 +49,10 @@ class Clip:
         self.name = data.get("name", clip_id)
         self.duration = float(data["duration"])
         self.loop = bool(data.get("loop", False))
+        # after this clip the character rests with this clip instead of
+        # "idle" (e.g. "sit" -> "sit_idle" until "stand")
+        self.idle_after = data.get("idle_after")
+        self.hidden = bool(data.get("hidden", False))  # internal, no button
         # key = [time, value] or [time, value, easing-to-next-key]
         self.tracks = {ch: sorted((float(k[0]), float(k[1]), k[2] if len(k) > 2 else "ease")
                                   for k in keys)

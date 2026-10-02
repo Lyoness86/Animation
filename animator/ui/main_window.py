@@ -6,15 +6,16 @@ from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
-                               QGroupBox, QHBoxLayout, QLabel, QListWidget,
+                               QGroupBox, QHBoxLayout, QInputDialog, QLabel, QListWidget,
                                QListWidgetItem, QMainWindow, QMessageBox, QProgressDialog,
-                               QPushButton, QRadioButton, QSlider, QVBoxLayout, QWidget)
+                               QPushButton, QRadioButton, QScrollArea, QSlider, QVBoxLayout,
+                               QWidget)
 
-from ..core.character import Action, Character
+from ..core.character import PROP_LAYERS, VIEW_LABELS, VIEW_NAMES, Action, Character, Prop
+from ..core.project import load_project, save_project
 from ..core.export import FORMATS, export_video
 from ..core.imageio_utils import read_image
 from ..core.keying import prepare_cutout
-from ..core.rig import Rig
 from ..core.scene import Scene
 from ..core.skeleton import detect_joints
 from .preview import PreviewWidget
@@ -22,7 +23,13 @@ from .qt_utils import thumbnail
 from .rig_check import RigCheckDialog
 
 IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.bmp *.webp)"
-CLIP_BUTTONS = [("Wave", "wave"), ("Jump", "jump"), ("Stop", "stop")]
+VIDEO_FILTER = "Videos (*.mp4 *.mov *.avi *.mkv *.webm *.m4v *.wmv)"
+PROJECT_FILTER = "Puppet Animator project (*.puppet)"
+ASSETS = Path(__file__).resolve().parents[2] / "assets"
+# clips shown first, in this order; every other (non-hidden) clip follows
+CLIP_ORDER = ["stop", "wave", "wave_other_arm", "jump", "point", "point_other_arm", "nod",
+              "shake_head", "look_left", "look_right", "look_around", "clap", "shrug", "laugh",
+              "celebrate", "dance", "sit", "stand", "drink", "drink_other_hand"]
 
 
 class MainWindow(QMainWindow):
@@ -30,6 +37,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Puppet Animator - prototype")
         self.scene = Scene()
+        self.project_path = None
         self.playing = False
         self._last_tick = None
 
@@ -39,8 +47,18 @@ class MainWindow(QMainWindow):
         self.preview.targetPicked.connect(self._add_walk)
 
         # ---- top bar
+        new_btn = QPushButton("New")
+        new_btn.clicked.connect(self.new_project)
+        open_btn = QPushButton("Open project...")
+        open_btn.clicked.connect(self.open_project)
+        save_btn = QPushButton("Save project")
+        save_btn.clicked.connect(self.save_project)
+        save_as_btn = QPushButton("Save as...")
+        save_as_btn.clicked.connect(lambda: self.save_project(ask=True))
         bg_btn = QPushButton("Background image...")
         bg_btn.clicked.connect(self.load_background)
+        bgv_btn = QPushButton("Background video...")
+        bgv_btn.clicked.connect(self.load_background_video)
         add_btn = QPushButton("Add character...")
         add_btn.setStyleSheet("font-weight: bold;")
         add_btn.clicked.connect(self.add_character)
@@ -48,7 +66,7 @@ class MainWindow(QMainWindow):
         export_btn.setStyleSheet("font-weight: bold;")
         export_btn.clicked.connect(self.export)
         top = QHBoxLayout()
-        for b in (bg_btn, add_btn):
+        for b in (new_btn, open_btn, save_btn, save_as_btn, bg_btn, bgv_btn, add_btn):
             top.addWidget(b)
         top.addStretch()
         top.addWidget(export_btn)
@@ -91,12 +109,39 @@ class MainWindow(QMainWindow):
         lb.addWidget(back, 0, 1)
         lb.addWidget(flip, 1, 0)
         lb.addWidget(remove, 1, 1)
+        add_view = QPushButton("Add view (side, back...)")
+        add_view.clicked.connect(self.add_view)
+        lb.addWidget(add_view, 2, 0)
+        self.start_view = QComboBox()
+        self.start_view.setToolTip("Which view the character starts in")
+        self.start_view.activated.connect(self._set_start_view)
+        lb.addWidget(self.start_view, 2, 1)
+
+        # held objects
+        self.prop_list = QListWidget()
+        self.prop_list.setMaximumHeight(60)
+        hold = QPushButton("Hold object...")
+        hold.clicked.connect(lambda: self.add_prop(test=False))
+        glass = QPushButton("Hold test glass")
+        glass.clicked.connect(lambda: self.add_prop(test=True))
+        edit_prop = QPushButton("Edit object")
+        edit_prop.clicked.connect(self.edit_prop)
+        del_prop = QPushButton("Remove object")
+        del_prop.clicked.connect(self.remove_prop)
         hint = QLabel("Drag a character to move it. Mouse wheel over the picture = resize.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray;")
         lv = QVBoxLayout(layers_box)
         lv.addWidget(self.layer_list)
         lv.addLayout(lb)
+        lv.addWidget(QLabel("Objects held:"))
+        lv.addWidget(self.prop_list)
+        pb = QGridLayout()
+        pb.addWidget(hold, 0, 0)
+        pb.addWidget(glass, 0, 1)
+        pb.addWidget(edit_prop, 1, 0)
+        pb.addWidget(del_prop, 1, 1)
+        lv.addLayout(pb)
         lv.addWidget(hint)
 
         # ---- right panel: actions
@@ -115,18 +160,19 @@ class MainWindow(QMainWindow):
         idle_row.addWidget(idle)
         idle_row.addWidget(self.idle_secs)
         grid.addLayout(idle_row, 0, 1)
-        for i, (label, clip) in enumerate(CLIP_BUTTONS):
-            b = QPushButton(label)
+        turn = QPushButton("Turn to view...")
+        turn.clicked.connect(self.add_turn)
+        grid.addWidget(turn, 1, 0)
+        # every animation file in the library gets a button (new files too)
+        lib = self.scene.lib.clips
+        clips = [c for c in CLIP_ORDER if c in lib] + sorted(
+            c for c in lib if c not in CLIP_ORDER and c not in ("idle", "walk") and not lib[c].hidden)
+        clip_grid = QGridLayout()
+        for i, clip in enumerate(clips):
+            b = QPushButton(lib[clip].name.replace(" (", "\n("))
+            b.setToolTip(lib[clip].name)
             b.clicked.connect(lambda _=False, c=clip: self.add_action(Action(c)))
-            grid.addWidget(b, 1 + i // 2, i % 2)
-        # any extra clips dropped into the animations folder appear here too
-        known = {"idle", "walk"} | {c for _, c in CLIP_BUTTONS}
-        extra = [c for c in self.scene.lib.clips if c not in known]
-        for k, clip in enumerate(extra):
-            i = len(CLIP_BUTTONS) + k
-            b = QPushButton(self.scene.lib[clip].name)
-            b.clicked.connect(lambda _=False, c=clip: self.add_action(Action(c)))
-            grid.addWidget(b, 1 + i // 2, i % 2)
+            clip_grid.addWidget(b, i // 3, i % 3)
         self.action_list = QListWidget()
         del_act = QPushButton("Remove step")
         del_act.clicked.connect(self.remove_action)
@@ -137,16 +183,22 @@ class MainWindow(QMainWindow):
         ab.addWidget(clear)
         av = QVBoxLayout(act_box)
         av.addLayout(grid)
+        av.addLayout(clip_grid)
         av.addWidget(self.action_list, 1)
         av.addLayout(ab)
         self.act_box = act_box
 
+        self.action_list.setMinimumHeight(120)
         right = QVBoxLayout()
-        right.addWidget(layers_box, 2)
-        right.addWidget(act_box, 3)
-        right_w = QWidget()
-        right_w.setLayout(right)
-        right_w.setFixedWidth(330)
+        right.addWidget(layers_box)
+        right.addWidget(act_box, 1)
+        right_inner = QWidget()
+        right_inner.setLayout(right)
+        right_w = QScrollArea()
+        right_w.setWidget(right_inner)
+        right_w.setWidgetResizable(True)
+        right_w.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        right_w.setFixedWidth(470)
 
         root = QHBoxLayout()
         root.addLayout(left, 1)
@@ -154,7 +206,7 @@ class MainWindow(QMainWindow):
         central = QWidget()
         central.setLayout(root)
         self.setCentralWidget(central)
-        self.resize(1400, 820)
+        self.resize(1500, 900)
 
         self.timer = QTimer(self)
         self.timer.setInterval(15)
@@ -197,7 +249,23 @@ class MainWindow(QMainWindow):
         self.layer_list.blockSignals(False)
         self._refresh_actions()
 
+    def _refresh_character_extras(self):
+        ch = self.selected
+        self.start_view.blockSignals(True)
+        self.start_view.clear()
+        self.prop_list.clear()
+        if ch:
+            for v in VIEW_NAMES:
+                if v in ch.views:
+                    self.start_view.addItem(f"Starts: {VIEW_LABELS[v]}", v)
+            self.start_view.setCurrentIndex(max(self.start_view.findData(ch.start_view), 0))
+            for pr in ch.props:
+                side = "left" if pr.hand == "l" else "right"
+                self.prop_list.addItem(f"{pr.name} - hand on {side} of picture - {PROP_LAYERS[pr.layer]}")
+        self.start_view.blockSignals(False)
+
     def _refresh_actions(self):
+        self._refresh_character_extras()
         self.action_list.clear()
         ch = self.selected
         self.act_box.setEnabled(ch is not None)
@@ -269,21 +337,11 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Choose character image (plain-colour background)", "", IMAGE_FILTER)
         if not path:
             return
-        name = Path(path).stem
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            cut = prepare_cutout(read_image(path))
-            joints, method = detect_joints(cut)
-        except Exception as e:
-            QApplication.restoreOverrideCursor()
-            QMessageBox.warning(self, "Add character", f"Could not process this image:\n{e}")
-            return
-        QApplication.restoreOverrideCursor()
-        dlg = RigCheckDialog(cut, joints, method, name, self)
-        if dlg.exec() != QDialog.Accepted:
+        rig = self._make_rig(path, "Add character")
+        if rig is None:
             return
         n = len(self.scene.characters)
-        ch = Character(dlg.rig, pos=(0.3 + 0.2 * (n % 3), 0.92), height=0.6)
+        ch = Character(rig, pos=(0.3 + 0.2 * (n % 3), 0.92), height=0.6)
         self.scene.characters.append(ch)
         self._select(ch)
         self._changed()
@@ -343,6 +401,159 @@ class MainWindow(QMainWindow):
     def clear_actions(self):
         if self.selected:
             self.selected.actions.clear()
+            self._changed()
+
+    # ------------------------------------------------------------ project
+    def _set_scene(self, scene):
+        if self.playing:
+            self.toggle_play()
+        self.scene = scene
+        self.preview.scene = scene
+        self.preview.selected = None
+        self.set_time(0.0)
+        self._refresh_lists()
+        self._changed()
+
+    def new_project(self):
+        if self.scene.characters and QMessageBox.question(
+                self, "New project", "Start a new empty project? Unsaved changes are lost.") != QMessageBox.Yes:
+            return
+        self.project_path = None
+        self.setWindowTitle("Puppet Animator - prototype")
+        self._set_scene(Scene())
+
+    def open_project(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open project", "", PROJECT_FILTER)
+        if not path:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            scene = load_project(path)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Open project", f"Could not open the project:\n{e}")
+            return
+        QApplication.restoreOverrideCursor()
+        self.project_path = path
+        self.setWindowTitle(f"Puppet Animator - {Path(path).name}")
+        self._set_scene(scene)
+
+    def save_project(self, ask=False):
+        path = self.project_path
+        if ask or not path:
+            path, _ = QFileDialog.getSaveFileName(self, "Save project", path or "my animation.puppet", PROJECT_FILTER)
+            if not path:
+                return
+            if not path.lower().endswith(".puppet"):
+                path += ".puppet"
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            save_project(self.scene, path)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Save project", f"Could not save:\n{e}")
+            return
+        QApplication.restoreOverrideCursor()
+        self.project_path = path
+        self.setWindowTitle(f"Puppet Animator - {Path(path).name}")
+
+    def load_background_video(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose background video", "", VIDEO_FILTER)
+        if not path:
+            return
+        try:
+            self.scene.set_background_video(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Background video", str(e))
+            return
+        self.preview.refresh()
+
+    # ------------------------------------------------------------ views
+    def _make_rig(self, path, title):
+        """Background removal + joint detection + 'check the dots'. Returns Rig or None."""
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            cut = prepare_cutout(read_image(path))
+            joints, method = detect_joints(cut)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, title, f"Could not process this image:\n{e}")
+            return None
+        QApplication.restoreOverrideCursor()
+        dlg = RigCheckDialog(cut, joints, method, Path(path).stem, self)
+        return dlg.rig if dlg.exec() == QDialog.Accepted else None
+
+    def add_view(self):
+        ch = self.selected
+        if ch is None:
+            return
+        labels = [VIEW_LABELS[v] for v in VIEW_NAMES if v != "front"]
+        label, ok = QInputDialog.getItem(self, "Add view", "Which view is this picture?", labels, 1, False)
+        if not ok:
+            return
+        view = next(v for v in VIEW_NAMES if VIEW_LABELS[v] == label)
+        path, _ = QFileDialog.getOpenFileName(self, f"Choose the {label} picture of {ch.name}", "", IMAGE_FILTER)
+        if not path:
+            return
+        rig = self._make_rig(path, "Add view")
+        if rig is None:
+            return
+        if view != "back":
+            rig.faces_left = QMessageBox.question(
+                self, "Add view", "Is the character facing LEFT in this picture?\n"
+                "(Walking direction is worked out from this.)") == QMessageBox.Yes
+        ch.views[view] = rig
+        self._changed()
+
+    def _set_start_view(self, i):
+        if self.selected:
+            self.selected.start_view = self.start_view.itemData(i)
+            self._changed()
+
+    def add_turn(self):
+        ch = self.selected
+        if ch is None:
+            return
+        views = [v for v in VIEW_NAMES if v in ch.views]
+        if len(views) < 2:
+            QMessageBox.information(self, "Turn", "This character only has one view.\n"
+                                    "Use \u201cAdd view\u201d to give it a side/back picture first.")
+            return
+        label, ok = QInputDialog.getItem(self, "Turn", "Turn to which view?", [VIEW_LABELS[v] for v in views], 0, False)
+        if ok:
+            self.add_action(Action("turn", view=next(v for v in views if VIEW_LABELS[v] == label)))
+
+    # ------------------------------------------------------------ props
+    def add_prop(self, test=False):
+        ch = self.selected
+        if ch is None:
+            return
+        if test:
+            img, name = read_image(ASSETS / "props" / "glass.png"), "Glass"
+        else:
+            path, _ = QFileDialog.getOpenFileName(self, "Choose object picture (plain background or transparent)", "", IMAGE_FILTER)
+            if not path:
+                return
+            try:
+                img, name = prepare_cutout(read_image(path)), Path(path).stem
+            except Exception as e:
+                QMessageBox.warning(self, "Hold object", str(e))
+                return
+        prop = Prop(img, name)
+        if PropDialog(prop, self).exec() == QDialog.Accepted:
+            ch.props.append(prop)
+            self._changed()
+
+    def edit_prop(self):
+        ch, row = self.selected, self.prop_list.currentRow()
+        if ch and 0 <= row < len(ch.props):
+            PropDialog(ch.props[row], self).exec()
+            self._changed()
+
+    def remove_prop(self):
+        ch, row = self.selected, self.prop_list.currentRow()
+        if ch and 0 <= row < len(ch.props):
+            del ch.props[row]
             self._changed()
 
     # ------------------------------------------------------------ export
@@ -460,3 +671,57 @@ class ExportDialog(QDialog):
             used.add(name)
             jobs.append((str(Path(folder) / f"{name}{ext}"), fmt, False, ch))
         return jobs
+
+
+class PropDialog(QDialog):
+    """Settings for a held object. Changes apply immediately to the object."""
+
+    def __init__(self, prop, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Held object: {prop.name}")
+        self.prop = prop
+        self.hand = QComboBox()
+        self.hand.addItem("Hand on the LEFT of the picture", "l")
+        self.hand.addItem("Hand on the RIGHT of the picture", "r")
+        self.hand.setCurrentIndex(0 if prop.hand == "l" else 1)
+        self.size = self._spin(0.02, 1.0, prop.size, 0.01)
+        self.dx = self._spin(-0.5, 0.5, prop.offset[0], 0.01)
+        self.dy = self._spin(-0.5, 0.5, prop.offset[1], 0.01)
+        self.rot = self._spin(-180, 180, prop.rotation, 5)
+        self.follow = self._spin(0, 1, prop.follow, 0.1)
+        self.layer = QComboBox()
+        self.layer.addItems(PROP_LAYERS)
+        self.layer.setCurrentIndex(prop.layer)
+        form = QFormLayout()
+        form.addRow("Held in:", self.hand)
+        form.addRow("Size (x character height):", self.size)
+        form.addRow("Move right/left:", self.dx)
+        form.addRow("Move down/up:", self.dy)
+        form.addRow("Rotate (degrees):", self.rot)
+        form.addRow("Turns with the arm (0-1):", self.follow)
+        form.addRow("Draw:", self.layer)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._apply)
+        bb.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addWidget(bb)
+
+    @staticmethod
+    def _spin(lo, hi, val, step):
+        sp = QDoubleSpinBox()
+        sp.setRange(lo, hi)
+        sp.setDecimals(2)
+        sp.setSingleStep(step)
+        sp.setValue(val)
+        return sp
+
+    def _apply(self):
+        p = self.prop
+        p.hand = self.hand.currentData()
+        p.size = self.size.value()
+        p.offset = (self.dx.value(), self.dy.value())
+        p.rotation = self.rot.value()
+        p.follow = self.follow.value()
+        p.layer = self.layer.currentIndex()
+        self.accept()

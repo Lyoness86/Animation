@@ -62,3 +62,30 @@ win.set_time(1.0)
 app.processEvents()
 win.grab().save(str(out / "ui_main.png"))
 print("duration", win.scene.duration(), "OK")
+
+# ---- new features: project open/save, views, props, clip buttons
+from animator.core.project import load_project  # noqa: E402
+from animator.ui.main_window import PropDialog  # noqa: E402
+
+proj = out / "test.puppet"
+if proj.exists():
+    win._set_scene(load_project(proj))
+    vc = win.scene.characters[0]          # the five-view test character
+    karen = win.scene.characters[1]
+    win._select(karen)
+    assert win.prop_list.count() == 1, win.prop_list.count()
+    dlg = PropDialog(karen.props[0], win)
+    dlg.size.setValue(0.14)
+    dlg._apply()
+    assert abs(karen.props[0].size - 0.14) < 1e-9
+    win._select(vc)
+    assert win.start_view.count() == 5
+    win.add_action(Action("turn", view="side"))
+    win.project_path = str(out / "test_resaved.puppet")
+    win.save_project()
+    assert (out / "test_resaved.puppet").exists()
+    win.set_time(2.0)
+    app.processEvents()
+    win.grab().save(str(out / "ui_project.png"))
+    print("project UI OK, clip buttons:",
+          sum(1 for b in win.findChildren(type(win.play_btn)) if b.toolTip()))

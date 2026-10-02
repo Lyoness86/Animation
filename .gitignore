@@ -6,3 +6,4 @@ exports/
 .pytest_cache/
 test_output/
 demo_scene.mp4
+demo_features.mp4

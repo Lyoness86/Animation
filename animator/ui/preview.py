@@ -1,6 +1,6 @@
 """The scene preview: shows the rendered frame and lets you select, drag,
 and resize characters, or click a walk destination."""
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
