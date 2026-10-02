@@ -1,0 +1,9 @@
+diffusers>=0.37
+transformers>=4.57
+accelerate>=1.2
+huggingface_hub
+safetensors
+pillow
+rembg
+onnxruntime
+pytest
