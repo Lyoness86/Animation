@@ -89,3 +89,31 @@ if proj.exists():
     win.grab().save(str(out / "ui_project.png"))
     print("project UI OK, clip buttons:",
           sum(1 for b in win.findChildren(type(win.play_btn)) if b.toolTip()))
+
+# ---- step list: times, highlight, remove / undo / reorder
+win._set_scene(win.scene)
+ch = win.scene.characters[-1]
+win._select(ch)
+ch.actions = []
+win.add_action(Action("wave"))
+win.add_action(Action("jump"))
+win.add_action(Action("nod"))
+assert win.action_list.count() == 4, win.action_list.count()
+assert win.action_list.item(0).text().startswith("1.") and "Wave" in win.action_list.item(0).text()
+win.set_time(3.0)  # wave is 0-2.6s, jump 2.6-3.9s
+assert win.action_list.item(1).font().bold() and not win.action_list.item(0).font().bold()
+win.action_list.setCurrentRow(0)
+win.move_action(+1)
+assert [a.kind for a in ch.actions] == ["jump", "wave", "nod"]
+win.action_list.setCurrentRow(1)
+win.remove_action()
+assert [a.kind for a in ch.actions] == ["jump", "nod"]
+win.undo_last_action()
+assert [a.kind for a in ch.actions] == ["jump"]
+win._jump_to_step(win.action_list.item(0))
+assert abs(win.preview.time - 0.01) < 1e-6
+win.add_action(Action("wave"))
+win.set_time(2.0)
+app.processEvents()
+win.grab().save(str(out / "ui_steps.png"))
+print("step list OK")

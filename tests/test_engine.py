@@ -112,10 +112,10 @@ def test_prop_follows_hand_and_layer_switches():
     scene = Scene()
     scene.characters.append(ch)
     ch.actions = [Action("drink_other_hand")]
-    # held glass is drawn just before the holding forearm...
+    # held glass is drawn just before the holding hand (fingers over it)...
     pose0, _, _ = ch.state_at(0.0, scene.lib)
     order = [x[1] if x[0] == "part" else "PROP" for x in draw_list(ch.props, pose0)]
-    assert order.index("PROP") == order.index("forearm_l") - 1
+    assert order.index("PROP") == order.index("hand_l") - 1
     # ...and in front of everything while drinking
     pose1, _, _ = ch.state_at(1.4, scene.lib)
     assert [x[0] for x in draw_list(ch.props, pose1)][-1] == "prop"

@@ -172,7 +172,7 @@ def draw_list(props, pose):
     for prop in props:
         layer = pose.get(f"prop_{prop.hand}.layer", -1.0)
         layer = prop.layer if layer < -0.5 else int(round(layer))
-        fore = ("part", "forearm_" + prop.hand)
+        fore = ("part", "hand_" + prop.hand)
         if layer <= 0:
             i = order.index(("part", "torso"))
         elif layer == 1:
@@ -189,7 +189,7 @@ def draw_prop(frame, prop, rig, mats, place, pose):
     """Draw a held object at the palm of its hand. It follows the hand's
     position; its angle stays upright unless prop.follow / prop_x.tilt say
     otherwise."""
-    fore = mats["forearm_" + prop.hand]
+    fore = mats["hand_" + prop.hand]
     palm = fore @ np.append(rig.hand_point(prop.hand), 1.0)
     fore_angle = math.degrees(math.atan2(fore[0, 1], fore[0, 0]))
     angle = prop.rotation + pose.get(f"prop_{prop.hand}.tilt", 0.0) + prop.follow * fore_angle
@@ -259,14 +259,18 @@ def draw_skinned_part(frame, part, mats, scale):
         px = px + np.where(ok, (d * rx - b * ry) / det, 0)
         py = py + np.where(ok, (-c * rx + a * ry) / det, 0)
 
-    if K > 1:  # where the solve didn't settle (extreme bends) draw nothing
+    if K > 1:  # where the solve didn't settle (extreme bends)
         wts = _sample_weights(W0, px - ox, py - oy)
         L = np.einsum("hwk,kij->hwij", wts, A)
         fx = L[..., 0, 0] * px + L[..., 0, 1] * py + L[..., 0, 2]
         fy = L[..., 1, 0] * px + L[..., 1, 1] * py + L[..., 1, 2]
         bad = np.hypot(qx - fx, qy - fy) > 4.0
-        px = np.where(bad, -1e5, px)
-        py = np.where(bad, -1e5, py)
+        # fall back to moving those pixels stiffly with their own bone
+        # rather than leaving a hole
+        rx = inv0[0, 0] * qx + inv0[0, 1] * qy + inv0[0, 2]
+        ry = inv0[1, 0] * qx + inv0[1, 1] * qy + inv0[1, 2]
+        px = np.where(bad, rx, px)
+        py = np.where(bad, ry, py)
 
     # pick a pre-shrunk copy of the picture close to the output size
     crop, f = part["levels"][0]

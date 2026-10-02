@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QBrush, QColor, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout,
                                QGroupBox, QHBoxLayout, QInputDialog, QLabel, QListWidget,
@@ -96,6 +96,7 @@ class MainWindow(QMainWindow):
         self.layer_list = QListWidget()
         self.layer_list.setIconSize(self.layer_list.iconSize() * 2)
         self.layer_list.currentRowChanged.connect(self._on_list_select)
+        self.layer_list.setMaximumHeight(110)
         fwd = QPushButton("Bring forward")
         fwd.clicked.connect(lambda: self.move_layer(+1))
         back = QPushButton("Send back")
@@ -173,22 +174,40 @@ class MainWindow(QMainWindow):
             b.setToolTip(lib[clip].name)
             b.clicked.connect(lambda _=False, c=clip: self.add_action(Action(c)))
             clip_grid.addWidget(b, i // 3, i % 3)
+        # the step list comes first so you can always see what's been added
         self.action_list = QListWidget()
-        del_act = QPushButton("Remove step")
+        self.action_list.setMinimumHeight(170)
+        self.action_list.itemClicked.connect(self._jump_to_step)
+        QShortcut(QKeySequence.Delete, self.action_list, activated=self.remove_action)
+        steps_hint = QLabel("Click a step to jump to it. The highlighted step is the one playing.")
+        steps_hint.setWordWrap(True)
+        steps_hint.setStyleSheet("color: gray;")
+        del_act = QPushButton("Remove selected")
         del_act.clicked.connect(self.remove_action)
-        clear = QPushButton("Clear all steps")
+        undo = QPushButton("Undo last")
+        undo.clicked.connect(self.undo_last_action)
+        up = QPushButton("Move up")
+        up.clicked.connect(lambda: self.move_action(-1))
+        down = QPushButton("Move down")
+        down.clicked.connect(lambda: self.move_action(+1))
+        clear = QPushButton("Clear all")
         clear.clicked.connect(self.clear_actions)
-        ab = QHBoxLayout()
-        ab.addWidget(del_act)
-        ab.addWidget(clear)
+        ab = QGridLayout()
+        ab.addWidget(del_act, 0, 0)
+        ab.addWidget(undo, 0, 1)
+        ab.addWidget(clear, 0, 2)
+        ab.addWidget(up, 1, 0)
+        ab.addWidget(down, 1, 1)
+        add_label = QLabel("<b>Add a step:</b>")
         av = QVBoxLayout(act_box)
+        av.addWidget(self.action_list)
+        av.addWidget(steps_hint)
+        av.addLayout(ab)
+        av.addWidget(add_label)
         av.addLayout(grid)
         av.addLayout(clip_grid)
-        av.addWidget(self.action_list, 1)
-        av.addLayout(ab)
         self.act_box = act_box
 
-        self.action_list.setMinimumHeight(120)
         right = QVBoxLayout()
         right.addWidget(layers_box)
         right.addWidget(act_box, 1)
@@ -269,12 +288,40 @@ class MainWindow(QMainWindow):
         self.action_list.clear()
         ch = self.selected
         self.act_box.setEnabled(ch is not None)
-        self.act_box.setTitle(f"What {ch.name} does (in order)" if ch else
-                              "Select a character to give it actions")
+        self.act_box.setTitle(f"Steps for {ch.name} (in order)" if ch else
+                              "Select a character to see and add its steps")
         if ch:
-            for a in ch.actions:
-                self.action_list.addItem(a.label(self.scene.lib))
-            self.action_list.addItem("(then stands idle)")
+            times = ch.action_times(self.scene.lib)
+            for i, (a, tt) in enumerate(zip(ch.actions, times)):
+                when = f"{tt[0]:5.1f}-{tt[1]:5.1f}s" if tt else "  (skipped)  "
+                self.action_list.addItem(f"{i + 1}.  {when}   {a.label(self.scene.lib)}")
+            if not ch.actions:
+                self.action_list.addItem("(no steps yet - add some below)")
+            self.action_list.addItem("then rests until the end")
+        self._highlight_step()
+
+    def _highlight_step(self):
+        """Mark the step that is playing at the current time."""
+        ch = self.selected
+        if ch is None:
+            return
+        cur = ch.action_at(self.preview.time, self.scene.lib)
+        last = self.action_list.count() - 1
+        for i in range(self.action_list.count()):
+            item = self.action_list.item(i)
+            active = (i == cur) or (cur < 0 and i == last)
+            item.setBackground(QBrush(QColor(255, 236, 150)) if active else QBrush())
+            f = item.font()
+            f.setBold(active)
+            item.setFont(f)
+
+    def _jump_to_step(self, item):
+        ch = self.selected
+        row = self.action_list.row(item)
+        if ch and 0 <= row < len(ch.actions):
+            tt = ch.action_times(self.scene.lib)[row]
+            if tt:
+                self.set_time(tt[0] + 0.01)
 
     def _update_time_range(self):
         d = self.scene.duration()
@@ -285,6 +332,7 @@ class MainWindow(QMainWindow):
 
     def _show_time(self):
         self.time_label.setText(f"{self.preview.time:5.2f} / {self.scene.duration():.2f} s")
+        self._highlight_step()
 
     def _changed(self):
         self._refresh_actions()
@@ -397,6 +445,22 @@ class MainWindow(QMainWindow):
         if ch and 0 <= row < len(ch.actions):
             del ch.actions[row]
             self._changed()
+            self.action_list.setCurrentRow(min(row, len(ch.actions) - 1))
+        elif ch and ch.actions:
+            QMessageBox.information(self, "Remove step", "Click a step in the list first.")
+
+    def undo_last_action(self):
+        if self.selected and self.selected.actions:
+            self.selected.actions.pop()
+            self._changed()
+
+    def move_action(self, d):
+        ch = self.selected
+        row = self.action_list.currentRow()
+        if ch and 0 <= row < len(ch.actions) and 0 <= row + d < len(ch.actions):
+            ch.actions.insert(row + d, ch.actions.pop(row))
+            self._changed()
+            self.action_list.setCurrentRow(row + d)
 
     def clear_actions(self):
         if self.selected:

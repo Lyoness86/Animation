@@ -11,17 +11,21 @@ BONES = [
     ("torso", None, "pelvis", "neck", 0.50),
     ("head", "torso", "neck", "head_top", None),  # thickness from head length
     ("upper_arm_l", "torso", "shoulder_l", "elbow_l", 0.20),
-    ("forearm_l", "upper_arm_l", "elbow_l", "hand_l", 0.20),
+    ("forearm_l", "upper_arm_l", "elbow_l", "wrist_l", 0.20),
+    ("hand_l", "forearm_l", "wrist_l", "hand_l", 0.17),
     ("upper_arm_r", "torso", "shoulder_r", "elbow_r", 0.20),
-    ("forearm_r", "upper_arm_r", "elbow_r", "hand_r", 0.20),
+    ("forearm_r", "upper_arm_r", "elbow_r", "wrist_r", 0.20),
+    ("hand_r", "forearm_r", "wrist_r", "hand_r", 0.17),
     ("thigh_l", None, "hip_l", "knee_l", 0.26),
-    ("shin_l", "thigh_l", "knee_l", "foot_l", 0.21),
+    ("shin_l", "thigh_l", "knee_l", "ankle_l", 0.21),
+    ("foot_l", "shin_l", "ankle_l", "toe_l", 0.17),
     ("thigh_r", None, "hip_r", "knee_r", 0.26),
-    ("shin_r", "thigh_r", "knee_r", "foot_r", 0.21),
+    ("shin_r", "thigh_r", "knee_r", "ankle_r", 0.21),
+    ("foot_r", "shin_r", "ankle_r", "toe_r", 0.17),
 ]
 BONE_NAMES = [b[0] for b in BONES]
-DRAW_ORDER = ["thigh_l", "thigh_r", "shin_l", "shin_r", "torso", "head",
-              "upper_arm_l", "upper_arm_r", "forearm_l", "forearm_r"]
+DRAW_ORDER = ["thigh_l", "thigh_r", "shin_l", "shin_r", "foot_l", "foot_r", "torso", "head",
+              "upper_arm_l", "upper_arm_r", "forearm_l", "forearm_r", "hand_l", "hand_r"]
 # Smooth bending: near each joint the picture blends between the two bones
 # (parent, child, joint, blend radius as a fraction of shoulder width).
 JOINT_BLENDS = [
@@ -30,6 +34,8 @@ JOINT_BLENDS = [
     ("torso", "upper_arm_r", "shoulder_r", 0.18), ("upper_arm_r", "forearm_r", "elbow_r", 0.16),
     ("torso", "thigh_l", "hip_l", 0.22), ("thigh_l", "shin_l", "knee_l", 0.17),
     ("torso", "thigh_r", "hip_r", 0.22), ("thigh_r", "shin_r", "knee_r", 0.17),
+    ("forearm_l", "hand_l", "wrist_l", 0.08), ("forearm_r", "hand_r", "wrist_r", 0.08),
+    ("shin_l", "foot_l", "ankle_l", 0.08), ("shin_r", "foot_r", "ankle_r", 0.08),
 ]
 BONE_PARENT = {b[0]: b[1] for b in BONES}
 
@@ -37,25 +43,27 @@ PART_COLOURS = {  # for the "check the dots" overlay (BGR)
     "torso": (60, 180, 75), "head": (25, 225, 255), "upper_arm_l": (200, 130, 0),
     "forearm_l": (240, 50, 230), "upper_arm_r": (48, 130, 245), "forearm_r": (180, 30, 145),
     "thigh_l": (75, 25, 230), "shin_l": (128, 128, 0), "thigh_r": (0, 128, 128), "shin_r": (195, 255, 170),
+    "hand_l": (255, 190, 220), "hand_r": (0, 215, 255), "foot_l": (180, 105, 255), "foot_r": (40, 40, 160),
 }
 
 
 def derived_joints(joints, alpha):
-    """Adds pelvis, hands, feet and ground point to the user-facing joints."""
+    """Adds pelvis and ground point to the user-facing joints, plus finger
+    and toe tips when an older project doesn't have them."""
     j = {k: np.array(v, float) for k, v in joints.items()}
     j["pelvis"] = (j["hip_l"] + j["hip_r"]) / 2
-    for s in "lr":
-        j["hand_" + s] = j["wrist_" + s] + 0.4 * (j["wrist_" + s] - j["elbow_" + s])
     ys, xs = np.nonzero(alpha > 128)
     ground = float(ys.max())
     for s in "lr":
-        ankle = j["ankle_" + s]
-        j["foot_" + s] = np.array([ankle[0], max(ground, ankle[1] + 1)])
+        if "hand_" + s not in j:
+            j["hand_" + s] = j["wrist_" + s] + 0.35 * (j["wrist_" + s] - j["elbow_" + s])
+        if "toe_" + s not in j:
+            j["toe_" + s] = np.array([j["ankle_" + s][0], max(ground, j["ankle_" + s][1] + 1)])
     j["feet"] = np.array([j["pelvis"][0], ground])
     return j
 
 
-END_JOINTS = {"pelvis", "head_top", "hand_l", "hand_r", "foot_l", "foot_r"}
+END_JOINTS = {"pelvis", "head_top", "hand_l", "hand_r", "toe_l", "toe_r"}
 
 
 def _seg_dist(px, py, a, b, pen_a=0.0, pen_b=0.0):
@@ -138,11 +146,31 @@ class Rig:
             out_r = (J["shoulder_r"] - J["neck"]) * 0.15
             extra = np.array([J["shoulder_l"] + up + out_l, J["shoulder_r"] + up + out_r,
                               J["shoulder_l"], J["shoulder_r"], J["hip_l"], J["hip_r"], J["neck"]])
-            pts = np.concatenate([np.stack([tx, ty], 1), extra]).astype(np.int32)
+            # bodies are roughly symmetric: mirror the visible torso across
+            # its centre line so a side hidden behind an arm is filled too
+            a, b = J["pelvis"], J["neck"]
+            d = (b - a) / max(np.linalg.norm(b - a), 1e-6)
+            sh_y = (J["shoulder_l"][1] + J["shoulder_r"][1]) / 2
+            hip_y = (J["hip_l"][1] + J["hip_r"][1]) / 2
+            chest = ty < sh_y + 0.6 * (hip_y - sh_y)  # arms mostly hide the chest sides
+            tp = np.stack([tx[chest], ty[chest]], 1).astype(np.float64)[::7]
+            rel = tp - a
+            mirrored = a + 2 * np.outer(rel @ d, d) - rel
+            pts = np.concatenate([np.stack([tx, ty], 1), mirrored, extra]).astype(np.int32)
             cv2.fillConvexPoly(hull, cv2.convexHull(pts), 1)
         hull = hull.astype(bool) & solid
-        arms = np.isin(labels, [idx[n] for n in ("upper_arm_l", "forearm_l", "upper_arm_r", "forearm_r")])
-        behind = hull & arms
+        arms = np.isin(labels, [idx[n] for n in ("upper_arm_l", "forearm_l", "hand_l",
+                                                 "upper_arm_r", "forearm_r", "hand_r")])
+        # also fill the body where a hand rests on the hips/legs
+        # (only where the hand is surrounded by body - closing fills small
+        # gaps enclosed by the body, not the space beside a hanging hand)
+        body = np.isin(labels, [idx[n] for n in ("torso", "thigh_l", "thigh_r")]).astype(np.uint8)
+        k = max(3, int(0.3 * sw) | 1)
+        enclosed = cv2.morphologyEx(body, cv2.MORPH_CLOSE,
+                                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))).astype(bool)
+        hands = np.isin(labels, [idx["hand_l"], idx["hand_r"]])
+        behind = (hull & arms) | (enclosed & hands & solid)
+        hull = hull | behind
         torso_img = self.image.copy()
         if behind.any():
             # fill from shirt pixels only (never from the arm's own skin)
@@ -250,8 +278,8 @@ class Rig:
 
     def hand_point(self, side):
         """Rest-picture point where a held object sits (palm), side l/r."""
-        w, e = self.J["wrist_" + side], self.J["elbow_" + side]
-        return w + 0.2 * (w - e)
+        w = self.J["wrist_" + side]
+        return w + 0.45 * (self.J["hand_" + side] - w)
 
     def mouth_point(self):
         return self.J["neck"] + 0.3 * (self.J["head_top"] - self.J["neck"])
@@ -353,6 +381,13 @@ class Rig:
         hair = self._find_hair(J, solid, head_len)
         if hair is not None:
             lab[hair] = BONE_NAMES.index("head")
+        # pixels right along a hand belong to that hand (fingers resting on a
+        # hip or thigh would otherwise be left behind when the arm moves)
+        yy, xx = np.nonzero(solid)
+        for side in "lr":
+            d = _seg_dist(xx, yy, J["wrist_" + side], J["hand_" + side])
+            near = d < 0.11 * sw
+            lab[yy[near], xx[near]] = BONE_NAMES.index("hand_" + side)
         return np.where(solid, lab, 255).astype(np.uint8)
 
     def _find_hair(self, J, solid, head_len):

@@ -11,7 +11,8 @@ import numpy as np
 
 JOINTS = ["head_top", "neck",
           "shoulder_l", "shoulder_r", "elbow_l", "elbow_r", "wrist_l", "wrist_r",
-          "hip_l", "hip_r", "knee_l", "knee_r", "ankle_l", "ankle_r"]
+          "hip_l", "hip_r", "knee_l", "knee_r", "ankle_l", "ankle_r",
+          "hand_l", "hand_r", "toe_l", "toe_r"]  # hand = fingertips, toe = tip of the foot
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
              "pose_landmarker_full/float16/latest/pose_landmarker_full.task")
@@ -94,6 +95,16 @@ def detect_mediapipe(rgba):
                            "hip": (23, 24), "knee": (25, 26), "ankle": (27, 28)}.items():
         a1, a2 = p(i1), p(i2)
         j[name + "_l"], j[name + "_r"] = (a1, a2) if a1[0] <= a2[0] else (a2, a1)
+    # fingertips and toes, attached to whichever wrist/ankle they belong to
+    alpha = rgba[..., 3]
+    for wi, (f1, f2) in ((15, (17, 19)), (16, (18, 20))):
+        w = p(wi)
+        side = "l" if np.allclose(j["wrist_l"], w) else "r"
+        j["hand_" + side] = _onto_body(alpha, w, w + 1.6 * ((p(f1) + p(f2)) / 2 - w))
+    for ai, ti in ((27, 31), (28, 32)):
+        a = p(ai)
+        side = "l" if np.allclose(j["ankle_l"], a) else "r"
+        j["toe_" + side] = _onto_body(alpha, a, p(ti))
     nose = p(0)
     mid_sh = (j["shoulder_l"] + j["shoulder_r"]) / 2
     j["neck"] = mid_sh + 0.25 * (nose - mid_sh)
@@ -101,6 +112,18 @@ def detect_mediapipe(rgba):
     j["head_top"] = np.array([nose[0], _top_in_band(rgba[..., 3], nose[0], sw * 0.3, nose[1] - sw)])
     j = {k: (float(v[0]), float(v[1])) for k, v in j.items()}
     return j if sanity_check(j, rgba) else None
+
+
+def _onto_body(alpha, base, tip):
+    """Pull a fingertip/toe point back towards its wrist/ankle until it lies
+    on the character (a hand in a pocket gets a short hand)."""
+    h, w = alpha.shape
+    for u in np.linspace(1.0, 0.0, 21):
+        q = base + u * (tip - base)
+        x, y = int(round(q[0])), int(round(q[1]))
+        if 0 <= x < w and 0 <= y < h and alpha[y, x] > 128:
+            return q
+    return base + 0.3 * (tip - base)
 
 
 def sanity_check(j, rgba):
@@ -146,6 +169,10 @@ def estimate_from_silhouette(rgba):
         "knee_l": (cx - hip_dx, knee_y), "knee_r": (cx + hip_dx, knee_y),
         "ankle_l": (cx - hip_dx, ankle_y), "ankle_r": (cx + hip_dx, ankle_y),
     }
+    for s in "lr":
+        w, e = np.array(j["wrist_" + s]), np.array(j["elbow_" + s])
+        j["hand_" + s] = tuple(w + 0.35 * (w - e))
+        j["toe_" + s] = (j["ankle_" + s][0], float(y1))
     return {k: (float(v[0]), float(v[1])) for k, v in j.items()}
 
 

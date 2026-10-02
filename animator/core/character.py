@@ -77,6 +77,7 @@ class Segment:
     facing_left: bool
     view: str = "front"
     from_view: str = None        # set for a turn
+    action: int = -1             # index of the step that made this segment
 
 
 @dataclass
@@ -103,7 +104,8 @@ class Character:
         segs, t, p, left = [], 0.0, tuple(self.pos), False
         view = self.start_view if self.start_view in self.views else "front"
         rest = "idle"
-        for a in self.actions:
+        for ai, a in enumerate(self.actions):
+            n = len(segs)
             if a.kind == "idle":
                 d = max(a.duration, 0.1)
                 segs.append(Segment(t, t + d, rest, p, p, left, view))
@@ -128,9 +130,25 @@ class Character:
                 segs.append(Segment(t, t + clip.duration, a.kind, p, p, left, view))
                 if clip.idle_after and clip.idle_after in lib.clips:
                     rest = clip.idle_after
-            t = segs[-1].t1
+            if len(segs) > n:
+                segs[-1].action = ai
+            t = segs[-1].t1 if segs else t
         segs.append(Segment(t, math.inf, rest, p, p, left, view))
         return segs
+
+    def action_times(self, lib):
+        """(start, end) for each step, or None for a step that does nothing
+        (e.g. turning to the view it is already in)."""
+        times = [None] * len(self.actions)
+        for sg in self.schedule(lib):
+            if sg.action >= 0:
+                times[sg.action] = (sg.t0, sg.t1)
+        return times
+
+    def action_at(self, t, lib):
+        """Index of the step playing at time t, or -1 when resting after the list."""
+        segs = self.schedule(lib)
+        return segs[self._find(segs, t)].action
 
     def end_time(self, lib):
         segs = self.schedule(lib)
