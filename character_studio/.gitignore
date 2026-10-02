@@ -1,0 +1,5 @@
+.venv/
+models/
+output/
+pc_report.txt
+__pycache__/
