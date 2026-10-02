@@ -1,0 +1,5 @@
+PySide6>=6.6
+numpy>=1.24
+opencv-contrib-python>=4.8
+mediapipe>=0.10.14
+imageio-ffmpeg>=0.5

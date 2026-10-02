@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+models/*.task
+exports/
+.pytest_cache/
+test_output/
