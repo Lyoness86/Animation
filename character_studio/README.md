@@ -21,15 +21,20 @@ folder (`.venv`, `models`, `output`). To uninstall, delete the folder.
 
 ## Hardware
 
-| Graphics card (NVIDIA) | Result |
+| Graphics card | Result |
 |---|---|
 | 16 GB+ VRAM (RTX 4070 Ti Super / 4080 / 4090 / 5070 Ti / 5080 / 5090, 3090) | Excellent, ~5–20 s per picture |
 | 12 GB (RTX 3060 12 GB, 4070, 4070 Super, 5070) | Good, ~15–45 s per picture |
 | 8 GB (RTX 3060 Ti, 3070, 4060, 4060 Ti 8 GB) | Works but slow, ~1–2 min per picture |
 | 8 GB older card (GTX 1070 / 1080, RTX 2070 / 2080) | Works, slowly: estimated 2–5 min per picture |
-| under 8 GB, AMD / Intel graphics, or no graphics card | Not practical |
+| AMD Radeon RX 9000 / RX 7600+ with 16 GB (e.g. RX 9060 XT 16 GB) | Good, estimated ~20–60 s per picture (AMD on Windows is newer and less tested) |
+| AMD Radeon RX 9000 / RX 7600+ with 8 GB | Works but slow |
+| under 8 GB, older AMD (RX 6000 and earlier), Intel graphics, or none | Not practical |
 
 RAM: 16 GB minimum, **32 GB recommended**.
+
+AMD cards use AMD's own PyTorch for Windows (ROCm). They need **Python 3.12** and an
+up-to-date AMD Adrenalin driver.
 
 On smaller PCs (under 12 GB graphics memory, under 24 GB RAM, or a card older
 than the RTX 30 series) it switches to a **low-memory mode** by itself. It reads all the
@@ -66,6 +71,7 @@ Advanced (from a command prompt in this folder):
 - `studio/prompts.py`: style, framing and pose wording.
 - `poc.py`: the proof-of-concept flow.
 - `check_pc.py`: hardware check (standard library only); `install_torch.py` picks
-  the PyTorch build for the card (CUDA 12.6 for GTX 10xx up to RTX 40xx, 12.8 for RTX 50xx).
+  the PyTorch build for the card (CUDA 12.6 for GTX 10xx up to RTX 40xx, 12.8 for RTX 50xx,
+  AMD ROCm 7.2.1 wheels for Radeon RX 7600+ / RX 9000).
 - Tests: `python -m pytest tests`. These run the whole flow with a tiny random-weight
   model on the CPU, so they test the plumbing but not picture quality.

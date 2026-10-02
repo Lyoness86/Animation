@@ -29,15 +29,20 @@ TEXT_LAYERS = (9, 18, 27)   # text-encoder layers the image model reads (same as
 
 
 def hardware():
-    """(gpu name, vram GB, bf16 capable, system RAM GB). gpu name is None without CUDA."""
+    """(gpu name, vram GB, bf16 capable, system RAM GB). gpu name is None without a usable GPU.
+
+    AMD cards show up through the same torch.cuda calls when AMD's ROCm PyTorch is installed.
+    """
     import psutil
     import torch
     ram = psutil.virtual_memory().total / 1024 ** 3
     if not torch.cuda.is_available():
         return None, 0.0, False, ram
     props = torch.cuda.get_device_properties(0)
-    # Cards before RTX 30xx (e.g. GTX 10xx, RTX 20xx) can't do bfloat16 maths natively.
-    bf16 = props.major >= 8
+    if torch.version.hip:   # AMD (ROCm): PyTorch knows whether the card handles bfloat16
+        bf16 = torch.cuda.is_bf16_supported()
+    else:                   # NVIDIA before RTX 30xx (GTX 10xx, RTX 20xx) can't do bfloat16 maths
+        bf16 = props.major >= 8
     return props.name, props.total_memory / 1024 ** 3, bf16, ram
 
 
@@ -90,8 +95,8 @@ class Engine:
             name, vram, bf16, ram = hardware()
             if name is None:
                 raise RuntimeError(
-                    "No NVIDIA graphics card is available to Python. Run check_my_pc.bat; "
-                    "if it shows an NVIDIA card, update its driver and run setup.bat again.")
+                    "No usable graphics card is available to Python. Run check_my_pc.bat; "
+                    "if it shows a suitable card, update its driver and run setup.bat again.")
             device = "cuda"
             mode = mode or choose_mode(vram, bf16, ram)
             compute_dtype = compute_dtype or (torch.bfloat16 if bf16 else torch.float32)

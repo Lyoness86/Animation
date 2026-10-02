@@ -17,13 +17,13 @@ if not exist .venv\Scripts\python.exe (
 )
 .venv\Scripts\python -m pip install --upgrade pip
 echo.
-echo Installing PyTorch for NVIDIA graphics cards (about 3 GB)...
+echo Installing PyTorch for this PC's graphics card (3-5 GB)...
 .venv\Scripts\python install_torch.py
 if errorlevel 1 goto failed
 .venv\Scripts\python -m pip install -r requirements.txt
 if errorlevel 1 goto failed
 echo.
-.venv\Scripts\python -c "import torch; ok = torch.cuda.is_available(); print('NVIDIA graphics card usable:', ok, '-', torch.cuda.get_device_name(0) if ok else 'NOT FOUND - update the NVIDIA driver')"
+.venv\Scripts\python -c "import torch; ok = torch.cuda.is_available(); print('Graphics card usable:', ok, '-', torch.cuda.get_device_name(0) if ok else 'NOT FOUND - update the graphics driver (NVIDIA, or AMD Adrenalin)')"
 echo.
 echo Downloading the image model FLUX.2 [klein] 4B (about 16 GB) into the models folder...
 .venv\Scripts\python -c "import studio.engine as e; from huggingface_hub import snapshot_download; print(snapshot_download(e.MODEL_ID))"
